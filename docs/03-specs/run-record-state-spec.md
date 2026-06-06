@@ -1,10 +1,11 @@
 ---
 status: accepted
 owner: engineering
-last_updated: 2026-06-06
+last_updated: 2026-06-07
 depends_on:
   - docs/02-architecture/build-pipeline.md
   - docs/02-architecture/data-model.md
+  - docs/04-decisions/ADR-0006-source-set-config-isolation.md
 ---
 
 # Run Record 与状态规格
@@ -12,6 +13,21 @@ depends_on:
 ## 职责边界
 
 Run Record 是一次 build、doctor 或 update 的状态事实来源。Build Application / Pipeline 创建和更新 run record；能力模块只能返回结构化结果，不直接改写 run record。
+
+Build run 必须归属到具体 `workspace_id/build_id`，并记录本次 resolved config 的 `source_set_id`。Doctor 和 update run 可以不关联 build，但如果命令指定了 `--config` 或 `--build`，run record 必须记录解析出的 `workspace_id` 或 `build_id`。
+
+## Pre-run Bootstrap
+
+`build`、`update` 和绑定配置文件或 build 的 `doctor` 在创建正式 run record 前，必须先用命令参数和 user config 执行最小配置解析。
+
+pre-run bootstrap 必须确定：
+
+- `workspace_id`。
+- 目标 `build_id`，仅 `build` 和指定 `--build` 的命令必填。
+- 本次命令涉及的 `source_set_id` 或 source-set 集合。
+- 配置 schema、build id、feed/plugin 引用和 enabled 状态均有效。
+
+pre-run bootstrap 不写 run record、不写 Health Report。配置文件读取失败、YAML 语法错误、schema 错误、build 不存在、build 引用不存在或 disabled feed/plugin 时，CLI 必须返回退出码 `2`。
 
 ## Run ID
 
@@ -25,7 +41,7 @@ YYYYMMDDTHHMMSSZ-<6位小写字母或数字>
 
 - 时间使用 UTC。
 - 后缀由系统随机生成。
-- 同一 workspace 中不得复用 run id。
+- 同一 project root 中不得复用 run id。
 
 ## Build 阶段 ID
 
@@ -34,10 +50,10 @@ build run 使用固定 stage id：
 | 顺序 | stage id | 对应阶段 |
 | --- | --- | --- |
 | 1 | `run.create` | 创建 run record |
-| 2 | `config.read` | 读取 user config |
-| 3 | `config.resolve` | 解析 profile / 写入 resolved config |
+| 2 | `config.read` | 记录 pre-run bootstrap 使用的 user config 快照 |
+| 3 | `config.resolve` | 解析 build / 写入 resolved config |
 | 4 | `health.preflight` | 执行预检 |
-| 5 | `source.update` | 更新共享源码缓存 |
+| 5 | `source.update` | 更新 source-set 源码缓存 |
 | 6 | `worktree.prepare` | 准备运行工作树 / 应用 adopted patches |
 | 7 | `plugins.attach` | feeds / plugins 接入 |
 | 8 | `health.build_context` | 构建上下文校验 |
@@ -65,10 +81,13 @@ build run 使用固定 stage id：
 
 创建规则：
 
-- `build` 在读取配置前创建 `runs/<profile>/<run-id>/run.json`。
-- `doctor` 创建 `runs/doctor/<run-id>/run.json`。
-- `update` 创建 `runs/update/<run-id>/run.json`。
+- `build` 在 pre-run bootstrap 成功后创建 `workspaces/<workspace-id>/runs/<build-id>/<run-id>/run.json`。
+- 未绑定配置文件的 `doctor` 创建 `runs/doctor/<run-id>/run.json`。
+- 绑定配置文件或 build 的 `doctor` 在 pre-run bootstrap 成功后创建 `workspaces/<workspace-id>/runs/doctor/<run-id>/run.json`。
+- `update` 在 pre-run bootstrap 成功后创建 `workspaces/<workspace-id>/runs/update/<run-id>/run.json`。
 - 创建 run record 时同时创建 `run.lock`，记录当前进程信息、开始时间和 command。
+
+`config.read` 和 `config.resolve` 阶段必须基于 pre-run bootstrap 使用的同一份配置快照执行，不得重新读取另一份配置内容。
 
 更新规则：
 

@@ -1,12 +1,13 @@
 ---
 status: accepted
 owner: engineering
-last_updated: 2026-06-06
+last_updated: 2026-06-07
 depends_on:
   - docs/02-architecture/data-model.md
   - docs/03-specs/run-record-state-spec.md
   - docs/03-specs/workspace-spec.md
   - docs/04-decisions/ADR-0005-ai-repair-auto-adoption.md
+  - docs/04-decisions/ADR-0006-source-set-config-isolation.md
 ---
 
 # 产物规格
@@ -16,7 +17,7 @@ depends_on:
 成功构建 finalize 后归档到：
 
 ```text
-artifacts/<profile>/<run-id>/
+workspaces/<workspace-id>/artifacts/<build-id>/<run-id>/
 ```
 
 必须包含：
@@ -37,7 +38,7 @@ artifacts/<profile>/<run-id>/
 失败构建后必须归档到：
 
 ```text
-diagnostics/<profile>/<run-id>/
+workspaces/<workspace-id>/diagnostics/<build-id>/<run-id>/
 ```
 
 必须包含：
@@ -58,17 +59,17 @@ diagnostics/<profile>/<run-id>/
 成功归档必须使用 staging 目录：
 
 ```text
-artifacts/.staging/<profile>/<run-id>/
+workspaces/<workspace-id>/artifacts/.staging/<build-id>/<run-id>/
 ```
 
 成功 finalize 顺序：
 
 1. 固件、日志、resolved config、health report、源码版本记录、Docker 摘要、worktree manifest 写入 artifact staging 目录。
-2. `artifact-index.json` 写入 artifact staging 目录，索引中的最终路径必须指向 `artifacts/<profile>/<run-id>/`。
-3. 如果本 run 有成功 AI 修复，adopted patch 和 metadata 先写入 `patches/adopted/<profile>/.staging/<patch-id>/`。
-4. 将 artifact staging 原子 rename 为 `artifacts/<profile>/<run-id>/`。
-5. 将 adopted patch staging 原子 finalize 到 `patches/adopted/<profile>/<patch-id>.patch` 和 `.json`，再更新 profile patch index。
-6. 原子写入 `locks/<profile>/success-lock.json`。
+2. `artifact-index.json` 写入 artifact staging 目录，索引中的最终路径必须指向 `workspaces/<workspace-id>/artifacts/<build-id>/<run-id>/`。
+3. 如果本 run 有成功 AI 修复，adopted patch 和 metadata 先写入 `workspaces/<workspace-id>/patches/adopted/<build-id>/.staging/<patch-id>/`。
+4. 将 artifact staging 原子 rename 为 `workspaces/<workspace-id>/artifacts/<build-id>/<run-id>/`。
+5. 将 adopted patch staging 原子 finalize 到 `workspaces/<workspace-id>/patches/adopted/<build-id>/<patch-id>.patch` 和 `.json`，再更新 `workspace_id/build_id` patch index。
+6. 原子写入 `workspaces/<workspace-id>/locks/<build-id>/success-lock.json`。
 7. 更新 run record final status 为 `succeeded`。
 
 可见性规则：
@@ -87,7 +88,7 @@ artifacts/.staging/<profile>/<run-id>/
 
 ## 归档规则
 
-- 产物必须关联 build profile 和 run id。
+- 产物必须关联 `workspace_id`、build 和 run id。
 - 成功产物不得被失败构建覆盖。
 - Success Lock 只在成功构建后更新。
 - AI 修复成功后必须归档 adopted patch 并把 adopted patch id 写入 Success Lock。
@@ -100,7 +101,9 @@ artifacts/.staging/<profile>/<run-id>/
 成功索引必须包含：
 
 - `schema_version`。
-- `profile`。
+- `workspace_id`。
+- `source_set_id`。
+- `build_id`。
 - `run_id`。
 - 固件路径列表。
 - 构建日志路径。
@@ -119,7 +122,9 @@ artifacts/.staging/<profile>/<run-id>/
 失败索引必须包含：
 
 - `schema_version`。
-- `profile`。
+- `workspace_id`。
+- `source_set_id`。
+- `build_id`。
 - `run_id`。
 - 失败阶段。
 - 失败包或失败目标。
@@ -134,18 +139,44 @@ artifacts/.staging/<profile>/<run-id>/
 - 最后现场摘要路径。
 - created time。
 
+## adopted patch metadata / index
+
+adopted patch metadata 必须包含：
+
+- `schema_version`。
+- `patch_id`。
+- `workspace_id`。
+- `build_id`。
+- 来源 run id。
+- 来源 AI 修复轮次。
+- patch 文件路径。
+- diff 摘要。
+- 采纳时间。
+- 关联 success lock。
+
+adopted patch index 必须包含：
+
+- `schema_version`。
+- `workspace_id`。
+- `build_id`。
+- patch id 列表。
+- 每个 patch 的 patch 路径。
+- 每个 patch 的 metadata 路径。
+- 每个 patch 的来源 run id。
+- created time。
+
 ## 崩溃恢复
 
 - artifact staging 目录可由后续清理命令删除，但不得自动提升为成功产物。
 - adopted patch staging 目录可由后续清理命令删除，除非 success lock 已引用该 patch id。
 - run record 没有 final status 时，恢复流程必须先按 Run Record 规格标记为 `blocked`，再允许清理 staging。
-- success lock 引用不存在的 artifact 或 adopted patch 时，文档静态检查必须报告一致性错误。
+- success lock 引用不存在的 artifact 或 adopted patch 时，项目状态一致性检查必须报告错误。
 
 ## 验收
 
 - 成功 run 可以通过 `artifact-index.json` 找到固件、配置、日志、版本和 Docker 摘要。
 - 失败 run 可以通过 `failure-index.json` 找到失败阶段、诊断上下文和 AI 修复历史。
-- 失败 run 不更新 `locks/<profile>/success-lock.json`。
+- 失败 run 不更新 `workspaces/<workspace-id>/locks/<build-id>/success-lock.json`。
 - AI 修复失败不生成 adopted patch。
 - success lock 写入失败时，run final status 不是 `succeeded`。
 - `logs --latest` 不展示 artifact staging 目录。

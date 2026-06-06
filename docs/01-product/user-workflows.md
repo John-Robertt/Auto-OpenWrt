@@ -1,7 +1,7 @@
 ---
 status: accepted
 owner: product
-last_updated: 2026-06-06
+last_updated: 2026-06-07
 depends_on:
   - docs/01-product/product-planning.md
 ---
@@ -10,11 +10,11 @@ depends_on:
 
 ## 首次初始化
 
-用户创建 Auto-OpenWrt 工作区，获得示例配置和文档入口。
+用户创建 Auto-OpenWrt project root，获得示例配置和文档入口。
 
 成功结果：
 
-- 工作区结构可用。
+- project root 结构可用。
 - 示例配置可编辑。
 - 用户知道下一步运行健康检查或构建。
 
@@ -24,7 +24,7 @@ depends_on:
 
 成功结果：
 
-- Docker、AI CLI、权限、磁盘、网络、配置、工作区和运行工作树存储状态通过检查。
+- Docker、AI CLI、权限、磁盘、网络、配置、project root、workspace 和运行工作树存储状态通过检查。
 - 构建命令触发的检查报告被记录到构建记录中；独立健康检查生成独立报告。
 
 失败结果：
@@ -34,12 +34,12 @@ depends_on:
 
 ## 常规构建
 
-用户选择一个 build profile 发起完整固件构建。
+用户选择一个 build 发起完整固件构建。
 
 成功结果：
 
 - 系统创建当前 run record 和运行工作树。
-- 系统更新共享源码缓存。
+- 系统更新当前配置和 build 对应的 source-set 源码缓存。
 - 系统接入 feeds 和插件。
 - 系统生成构建配置并执行 Docker 构建。
 - 系统归档固件、日志、健康检查报告、解析后配置、Docker 环境摘要和版本记录。
@@ -61,11 +61,13 @@ depends_on:
 - 系统保留最后现场、诊断包、检查点和所有修复历史。
 - 系统不生成 adopted patch，不更新 success lock。
 
-## 多 Profile 维护
+## 多配置与多 Build 维护
 
-用户在一个工作区维护多套 build profile。
+用户在一个 project root 中维护多份配置文件，每份配置文件对应一个独立 workspace；每个 workspace 内可以维护多套 build。
 
 成功结果：
 
-- 每个 profile 有独立 target、配置、运行工作树、日志、产物、构建记录和 adopted patches。
-- 多 profile 不共享会导致混淆的可变状态。
+- 不同配置文件可以声明不同 OpenWrt、feeds 和 plugins 版本。
+- 每份配置文件有独立 run record、success lock、adopted patches、诊断和产物。
+- 每个 build 有独立 OpenWrt target、配置、运行工作树、日志、产物、构建记录和 adopted patches。
+- 多配置和多 build 不会共享可能导致混淆的可变状态。

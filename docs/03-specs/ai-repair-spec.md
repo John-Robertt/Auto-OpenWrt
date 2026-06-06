@@ -8,6 +8,7 @@ depends_on:
   - docs/04-decisions/ADR-0003-ai-repair-checkpoint.md
   - docs/04-decisions/ADR-0004-run-worktree-isolation.md
   - docs/04-decisions/ADR-0005-ai-repair-auto-adoption.md
+  - docs/04-decisions/ADR-0006-source-set-config-isolation.md
   - docs/02-architecture/build-pipeline.md
 ---
 
@@ -31,7 +32,7 @@ depends_on:
 AI CLI 由用户配置：
 
 - `ai_repair.command`：可执行文件名或绝对路径。
-- `ai_repair.args`：参数列表，支持占位符 `{context_file}`、`{worktree}`、`{run_id}`、`{profile}`、`{round}`。
+- `ai_repair.args`：参数列表，支持占位符 `{context_file}`、`{worktree}`、`{run_id}`、`{build_id}`、`{round}`。
 - `ai_repair.timeout`：单轮修复超时时间，默认 `30m`。
 
 调用规则：
@@ -39,9 +40,9 @@ AI CLI 由用户配置：
 - 工作目录必须是当前 run 工作树的宿主可访问源码路径。
 - v1 不支持在 `docker-volume` storage driver 下调用外部 AI CLI；启用 AI 修复时，健康检查必须先确认 storage driver 为 `host-path` 或 `linux-path`。
 - 如果 `args` 为空，系统把 `{context_file}` 作为唯一参数传给 command。
-- 系统必须设置环境变量：`AUTO_OPENWRT_CONTEXT_FILE`、`AUTO_OPENWRT_WORKTREE`、`AUTO_OPENWRT_RUN_ID`、`AUTO_OPENWRT_PROFILE`、`AUTO_OPENWRT_REPAIR_ROUND`。
-- stdout 写入 `diagnostics/<profile>/<run-id>/ai/round-<n>/stdout.log`。
-- stderr 写入 `diagnostics/<profile>/<run-id>/ai/round-<n>/stderr.log`。
+- 系统必须设置环境变量：`AUTO_OPENWRT_CONTEXT_FILE`、`AUTO_OPENWRT_WORKTREE`、`AUTO_OPENWRT_RUN_ID`、`AUTO_OPENWRT_BUILD_ID`、`AUTO_OPENWRT_REPAIR_ROUND`。
+- stdout 写入 `workspaces/<workspace-id>/diagnostics/<build-id>/<run-id>/ai/round-<n>/stdout.log`。
+- stderr 写入 `workspaces/<workspace-id>/diagnostics/<build-id>/<run-id>/ai/round-<n>/stderr.log`。
 - 退出码、开始时间、结束时间和超时状态写入 AI 修复历史。
 - AI CLI 返回非零退出码、超时或 diff 采集失败时，CLI 返回退出码 `7`，除非后续归档失败导致更高优先级的退出码 `8`。
 
@@ -50,7 +51,7 @@ AI CLI 由用户配置：
 诊断上下文路径：
 
 ```text
-diagnostics/<profile>/<run-id>/ai/round-<n>/context.json
+workspaces/<workspace-id>/diagnostics/<build-id>/<run-id>/ai/round-<n>/context.json
 ```
 
 诊断上下文必须包含：
@@ -75,7 +76,9 @@ diagnostics/<profile>/<run-id>/ai/round-<n>/context.json
 
 - checkpoint id。
 - run id。
-- profile。
+- `workspace_id`。
+- source set id。
+- `build_id`。
 - 修复轮次。
 - 工作树路径。
 - 修复前源码版本。
@@ -84,12 +87,12 @@ diagnostics/<profile>/<run-id>/ai/round-<n>/context.json
 检查点路径：
 
 ```text
-checkpoints/<profile>/<run-id>/round-<n>/checkpoint.json
+workspaces/<workspace-id>/checkpoints/<build-id>/<run-id>/round-<n>/checkpoint.json
 ```
 
 ## 修改范围
 
-AI CLI 允许修改当前 run 工作树，但不得直接修改共享源码缓存、success lock、历史 run record 或其他 profile 的工作树。所有修改必须关联到当前 run record，并记录差异。
+AI CLI 允许修改当前 run 工作树，但不得直接修改 source-set 源码缓存、success lock、历史 run record 或其他 `workspace_id/build_id` 的工作树。所有修改必须关联到当前 run record，并记录差异。
 
 v1 自动采纳范围：
 
@@ -109,7 +112,7 @@ v1 自动采纳范围：
 
 ## 自动采纳规则
 
-- 修复后构建成功时，系统自动把最终 diff 归档为 profile 级 adopted patch。
+- 修复后构建成功时，系统自动把最终 diff 归档为 `workspace_id/build_id` 级 adopted patch。
 - adopted patch 必须记录 patch id、来源 run id、来源修复轮次、diff 摘要和 patch 文件路径。
 - success lock 必须记录 adopted patch ids。
 - 修复失败或超过重试次数时，不得生成 adopted patch，不得更新 success lock。

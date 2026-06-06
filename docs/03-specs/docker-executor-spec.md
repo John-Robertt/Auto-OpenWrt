@@ -9,6 +9,7 @@ depends_on:
   - docs/03-specs/workspace-spec.md
   - docs/04-decisions/ADR-0002-docker-build-boundary.md
   - docs/04-decisions/ADR-0004-run-worktree-isolation.md
+  - docs/04-decisions/ADR-0006-source-set-config-isolation.md
 ---
 
 # Docker 执行器规格
@@ -17,14 +18,16 @@ depends_on:
 
 Docker Executor 只负责在当前 run 工作树中执行 OpenWrt 构建命令，并记录 Docker image、platform、volume、路径映射、退出码和日志。
 
-Docker Executor 不读取 user config 做产品决策，不更新共享源码缓存，不写 success lock，不直接采纳 AI diff。
+Docker image 只表示基础构建环境，不包含 OpenWrt、feeds 或 plugins 源码。Docker Executor 不读取 user config 做产品决策，不更新 source-set 源码缓存，不写 success lock，不直接采纳 AI diff。
 
 ## 输入
 
 执行请求必须来自 Build Application / Pipeline，并包含：
 
 - `run_id`。
-- `profile`。
+- `workspace_id`。
+- `source_set_id`。
+- `build_id`。
 - resolved config 路径。
 - Worktree Manifest。
 - Docker image。
@@ -58,13 +61,14 @@ Docker Executor 只允许挂载以下目录或 volume：
 - 下载缓存，容器路径固定为 `/openwrt/dl`，读写。
 - 构建缓存，容器路径固定为 `/auto-openwrt/cache/build`，读写。
 - artifact staging 目录，容器路径固定为 `/auto-openwrt/artifacts`，读写。
-- feeds/plugins 共享源码缓存，仅当 `src-link` 需要时挂载，容器路径固定为 `/auto-openwrt/sources/<kind>/<name>`，只读。
+- feeds/plugins source-set 源码缓存，仅当 `src-link` 需要时挂载，容器路径固定为 `/auto-openwrt/sources/<source-set-id>/<kind>/<name>`，只读。
 
 禁止挂载：
 
-- 整个 workspace root。
-- 其他 profile 的工作树。
+- 整个 project root。
+- 其他 `workspace_id/build_id` 的工作树。
 - 历史 run 工作树。
+- 其他 source-set 的源码缓存。
 - `locks/`。
 - `patches/adopted/`。
 
@@ -86,10 +90,10 @@ make -j<jobs> V=s
 
 命令规则：
 
-- `<jobs>` 来自 resolved config 的 `profiles[].build.jobs`；`auto` 由宿主解析为可用 CPU 数。
+- `<jobs>` 来自 resolved config 的 `builds[].config.jobs`；`auto` 由宿主解析为可用 CPU 数。
 - config fragments 目录为空时，config fragment 步骤必须跳过，不得失败。
 - Docker Executor 必须使用 `sh -lc` 执行命令序列，并把每条命令写入 Docker 日志。
-- stdout 和 stderr 必须同时写入 `runs/<profile>/<run-id>/logs/docker-build.log`。
+- stdout 和 stderr 必须同时写入 `workspaces/<workspace-id>/runs/<build-id>/<run-id>/logs/docker-build.log`。
 - 构建产物收集由 Artifact Recorder 完成；Docker Executor 只保证容器内命令结束后 artifact staging 目录可读。
 
 ## 退出语义
@@ -97,7 +101,7 @@ make -j<jobs> V=s
 - Docker CLI 不存在、daemon 不可用或权限不足：健康检查阶段阻断，CLI 返回 `3`。
 - `docker run` 无法启动容器：Docker 执行环境失败，CLI 返回 `5`。
 - 容器启动成功但 OpenWrt 构建命令非零退出：OpenWrt 构建失败，CLI 返回 `6`。
-- Docker 日志无法写入：工作区读写失败，CLI 返回 `8`。
+- Docker 日志无法写入：工作区状态目录读写失败，CLI 返回 `8`。
 
 ## Docker 环境摘要
 
@@ -120,7 +124,7 @@ make -j<jobs> V=s
 
 ## 验收
 
-- Docker Executor 不挂载 workspace root。
+- Docker Executor 不挂载 project root。
 - `docker.platform: auto` 不传递 `--platform`。
 - 非 `auto` platform 写入 run record。
 - 构建日志可从 run record 和 artifact index 追溯。

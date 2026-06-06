@@ -19,7 +19,7 @@ depends_on:
 
 ## 目标
 
-实现从 run record 创建、预检、共享源码更新、运行工作树准备、feeds/plugins 接入、构建上下文校验、构建配置生成、Docker 构建到产物归档的主流程。
+实现从 run record 创建、预检、source-set 源码更新、运行工作树准备、feeds/plugins 接入、构建上下文校验、构建配置生成、Docker 构建到产物归档的主流程。
 
 本计划依赖的工程规格已为 `accepted`，可以作为 Phase 2 代码实现准入。
 
@@ -28,7 +28,7 @@ depends_on:
 - `build` 命令。
 - `update` 命令。
 - Run Record。
-- Source Manager：OpenWrt、feeds、plugins 共享源码缓存更新和版本快照。
+- Source Manager：OpenWrt、feeds、plugins 的 source-set 源码缓存更新和版本快照。
 - Plugin Manager：feeds/plugins 接入和风险识别。
 - 运行工作树准备和 worktree manifest。
 - adopted patches 应用入口。
@@ -46,8 +46,8 @@ depends_on:
 
 ## 验收
 
-- `update` 可以更新配置中启用的 OpenWrt、feeds 和插件共享源码缓存。
-- `build --profile <name>` 可以按指定 build profile 发起构建。
+- `update` 可以更新配置中启用的 OpenWrt、feeds 和插件 source-set 源码缓存。
+- `build --build <id>` 可以按指定 build 发起构建。
 - 每次构建拥有独立 run record 和运行工作树。
 - 构建前自动执行预检。
 - 运行工作树准备后执行构建上下文校验。

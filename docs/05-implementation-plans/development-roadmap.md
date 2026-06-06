@@ -1,7 +1,7 @@
 ---
 status: accepted
 owner: engineering
-last_updated: 2026-06-06
+last_updated: 2026-06-07
 depends_on:
   - docs/00-governance/docs-first.md
   - docs/05-implementation-plans/phase-1-foundation.md
@@ -50,13 +50,14 @@ known_limits:
 | --- | --- | --- | --- | --- |
 | D0 | 建立工程骨架与文档检查 | Phase 1、CLI 规格 | Go module、CLI app skeleton、文档静态检查脚本 | 文档检查通过；CLI 可输出 help；`go test ./...` 通过 |
 | D1 | Workspace 与配置解析 | Phase 1、配置规格、工作区规格 | `init`、目录创建、示例配置、YAML parser、resolved config | `init` 幂等；配置错误包含字段路径和建议；resolved config 显式默认值 |
+| D1a | Project Root / Workspace / Builds 命名与目录迁移 | ADR-0006、CLI 规格、配置规格、工作区规格 | `--project`、`--build`、`configs/`、`workspaces/<workspace-id>/`、`workspace.id`、`builds[]`、`build_id`、source-set cache 路径 | 旧 `--workspace`、`--profile`、`profiles[]` 目标表面不再作为 v1 主接口；多配置同名 build 的状态目录互不覆盖 |
 | D2 | Run Record 与 doctor | Phase 1、Run Record 规格、健康检查规格 | run id、doctor run、health report、run recovery | `doctor --json` 输出统一结构；中断 run 可恢复为 `blocked` |
-| D3 | 共享源码与插件更新 | Phase 2、源码与插件规格 | `update`、clone/fetch/reset、source snapshot、插件风险识别 | update 成功记录 commit；失败返回仓库名称和退出码 `4` |
+| D3 | Source-set 源码与插件更新 | Phase 2、源码与插件规格 | `update`、clone/fetch/reset、source-set snapshot、插件风险识别 | update 成功记录 commit；失败返回仓库名称和退出码 `4` |
 | D4 | 运行工作树与构建上下文 | Phase 2、工作区规格、健康检查规格 | worktree manifest、storage driver、adopted patch 应用入口、context check | manifest 记录 logical id 和物理位置；无效 target/plugin 阻断构建 |
-| D5 | Docker 构建执行 | Phase 2、Docker 执行器规格 | Docker mount、构建命令、Docker 环境摘要、构建日志 | 不挂载 workspace root；Docker 启动失败返回 `5`；OpenWrt 构建失败返回 `6` |
+| D5 | Docker 构建执行 | Phase 2、Docker 执行器规格 | Docker mount、构建命令、Docker 环境摘要、构建日志 | 不挂载 project root；Docker 启动失败返回 `5`；OpenWrt 构建失败返回 `6` |
 | D6 | 产物与失败诊断 | Phase 2、产物规格 | artifact staging/finalize、failure-index、logs | success lock 失败时 run 不为 `succeeded`；`logs --latest` 不展示 staging |
 | D7 | AI 修复调用闭环 | Phase 3、AI 修复规格 | AI context、checkpoint、CLI 调用、stdout/stderr/exit code、diff | 非零退出码或超时计入失败轮次；最多重试 5 次 |
-| D8 | Adopted Patch 与端到端回归 | Phase 3、产物规格、源码与插件规格 | adopted patch finalize、success lock patch ids、多 profile 回归 | 成功修复可追溯 patch/run/round；失败不更新 success lock |
+| D8 | Adopted Patch 与端到端回归 | Phase 3、产物规格、源码与插件规格 | adopted patch finalize、success lock patch ids、多 build 回归 | 成功修复可追溯 patch/run/round；失败不更新 success lock |
 
 ## 验证证据
 
@@ -72,9 +73,9 @@ known_limits:
 
 ```sh
 go test ./...
-auto-openwrt init --workspace <tmp-workspace> --json
-auto-openwrt doctor --workspace <tmp-workspace> --config <tmp-workspace>/config/auto-openwrt.yaml --json
-auto-openwrt logs --workspace <tmp-workspace> --latest --json
+auto-openwrt init --project <tmp-project> --json
+auto-openwrt doctor --project <tmp-project> --config <tmp-project>/configs/auto-openwrt.yaml --json
+auto-openwrt logs --project <tmp-project> --latest --json
 ```
 
 具体命令可以随工程结构调整，但必须保持每个增量的验收语义不变。
@@ -83,7 +84,7 @@ auto-openwrt logs --workspace <tmp-workspace> --latest --json
 
 | 能力 | 产品依据 | 架构依据 | 规格依据 | Phase |
 | --- | --- | --- | --- | --- |
-| CLI 与工作区初始化 | 产品策划、用户工作流 | 架构设计、模块边界 | CLI、配置、工作区 | Phase 1 |
+| CLI 与 project root 初始化 | 产品策划、用户工作流 | 架构设计、模块边界 | CLI、配置、工作区 | Phase 1 |
 | 健康检查 | 产品需求、用户工作流 | 构建流水线 | 健康检查、Run Record | Phase 1 |
 | 源码与插件更新 | 产品需求 | 架构设计、构建流水线 | 源码与插件、配置 | Phase 2 |
 | 运行工作树隔离 | 产品策划 | ADR-0004、数据模型 | 工作区、源码与插件 | Phase 2 |
@@ -107,6 +108,71 @@ auto-openwrt logs --workspace <tmp-workspace> --latest --json
 2. 回到相关 `03-specs/` 或 ADR 补充决策。
 3. 重新运行文档静态检查。
 4. 再恢复代码实现。
+
+## 增量验收记录
+
+### D0：建立工程骨架与文档检查
+
+```text
+increment_id: D0
+goal: 建立工程骨架与文档检查
+upstream_docs: docs/05-implementation-plans/phase-1-foundation.md, docs/03-specs/cli-spec.md
+changed_modules: cmd/auto-openwrt, cmd/doccheck, internal/cli, internal/docscheck
+created_artifacts: Go module、CLI help skeleton、文档静态检查命令、CLI/doccheck 单元测试
+verification: go test ./...；go run ./cmd/doccheck；go run ./cmd/auto-openwrt --help；go run ./cmd/auto-openwrt doctor --help
+known_limits: init、doctor、build、update、logs 的业务行为仍按后续增量实现
+```
+
+验收结论：
+
+- 文档静态检查覆盖 front matter、依赖存在性、依赖图无环和 README 状态一致性。
+- CLI 可以输出根 help 和各命令 help。
+- 非 help 的业务命令在 D0 返回退出码 `2`，不提前实现后续增量能力。
+
+### D1：Workspace 与配置解析
+
+```text
+increment_id: D1
+goal: Workspace 与配置解析
+upstream_docs: docs/05-implementation-plans/phase-1-foundation.md, docs/03-specs/cli-spec.md, docs/03-specs/config-spec.md, docs/03-specs/workspace-spec.md
+changed_modules: internal/cli, internal/app, internal/workspace, internal/config
+created_artifacts: init 命令、workspace 目录创建、示例配置、YAML parser、resolved config 内部 API、配置解析/工作区/CLI 测试
+verification: go test ./...；go run ./cmd/doccheck；go run ./cmd/auto-openwrt init --workspace /tmp/auto-openwrt-d1-final-98Zqrv --json；/tmp/auto-openwrt-d1-final-bin init --workspace /tmp/auto-openwrt-d1-final-98Zqrv --json 返回退出码 2 和 CONFIG_EXISTS
+known_limits: doctor run、run id 生成、run record、health report 和中断恢复仍属于 D2；源码更新、运行工作树准备和构建流程不在 D1 范围
+```
+
+验收结论：
+
+- `init --json` 可以创建完整 workspace 目录树和 `config/auto-openwrt.yaml` 示例配置。
+- 已存在配置且未传 `--force` 时返回退出码 `2`，错误 code 为 `CONFIG_EXISTS`，不覆盖用户配置。
+- `--force` 只覆盖示例配置，不删除已有 run、source、artifact、diagnostic、patch 或 lock 状态。
+- 示例配置可解析，resolved config 内部 API 显式展开 `workspace.worktree_storage`、`docker.image`、`docker.platform`、`ai_repair.adoption: auto`、默认重试次数、默认 jobs 和空 adopted patch ids。
+- 配置 schema 错误包含字段路径、原因和修复建议。
+
+ADR-0006 后续调整：
+
+- D1 验收记录反映 ADR-0006 前的已完成实现，`--workspace`、`config/auto-openwrt.yaml` 和顶层状态目录属于待迁移表面。
+- D1a 必须在 D2 前完成，把 CLI、示例配置、目录创建、resolved config 路径和测试迁移到 `--project`、`--build`、`configs/`、`workspaces/<workspace-id>/`、`builds[]` 与 `build_id`。
+
+### D1a：Project Root / Workspace / Builds 命名与目录迁移
+
+```text
+increment_id: D1a
+goal: Project Root / Workspace / Builds 命名与目录迁移
+upstream_docs: docs/05-implementation-plans/phase-1-foundation.md, docs/03-specs/cli-spec.md, docs/03-specs/config-spec.md, docs/03-specs/workspace-spec.md, docs/04-decisions/ADR-0006-source-set-config-isolation.md
+changed_modules: internal/cli, internal/app, internal/workspace, internal/config
+created_artifacts: --project/--build CLI 表面、project root 目录骨架、示例 workspace 状态目录、builds[] 示例配置、workspace_id/build_id/source_set_id resolved config、D1a CLI/config/workspace 测试
+verification: go test ./...；go run ./cmd/doccheck；go run ./cmd/auto-openwrt --help；go run ./cmd/auto-openwrt doctor --help；临时二进制 init --project <tmp> --json；重复 init 返回退出码 2 和 CONFIG_EXISTS；init --workspace <tmp> 返回退出码 2
+known_limits: doctor run、run id 生成、run record、health report、pre-run bootstrap 持久化和中断恢复仍属于 D2；源码更新、运行工作树准备和构建流程不在 D1a 范围
+```
+
+验收结论：
+
+- CLI help 和 `init` 主接口已迁移到 `--project`；`--workspace`、`--profile` 不再作为 v1 主接口。
+- `init --json` 可以创建 project root 骨架、`configs/auto-openwrt.yaml` 和示例 `workspaces/auto-openwrt/` 状态目录。
+- 示例配置可解析为 `builds[]` 模型，resolved config 显式输出 `workspace_id`、`build_id`、`source_set_id`、project root、logical worktree id、默认值和空 adopted patch ids。
+- 旧 `profiles[]` 配置返回 schema 错误，并提示迁移到 `builds[]`。
+- 多配置同名 build 的状态目录通过 `workspaces/<workspace-id>/` 路径隔离，后续 run record 写入由 D2 实现。
 
 ## 完成标准
 

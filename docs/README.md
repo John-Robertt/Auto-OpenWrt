@@ -68,8 +68,11 @@ docs/
 
 ## 当前关键决策
 
-- 每次构建使用 `worktrees/<profile>/<run-id>/` 专属运行工作树，`sources/` 只作为共享源码缓存。
-- `worktrees/<profile>/<run-id>/` 是逻辑工作树标识；物理源码位置由 `host-path`、`docker-volume` 或 `linux-path` storage driver 决定，并写入 worktree manifest。
+- project root 可以包含多个配置文件；每个配置文件通过 `workspace_id` 映射到独立 `workspaces/<workspace-id>/` 状态目录。
+- 不同源码输入通过 `source_set_id` 隔离源码缓存，相同源码输入可以复用 `sources/source-sets/<source-set-id>/`。
+- 每次构建使用 `workspaces/<workspace-id>/worktrees/<build-id>/<run-id>/` 专属运行工作树，`sources/source-sets/<source-set-id>/` 只作为源码缓存。
+- `workspaces/<workspace-id>/worktrees/<build-id>/<run-id>/` 是逻辑工作树标识；物理源码位置由 `host-path`、`docker-volume` 或 `linux-path` storage driver 决定，并写入 worktree manifest。
 - Docker 执行器只挂载当前 run 工作树、缓存和产物目录，路径映射写入 run record。
-- AI 修复只允许修改当前 run 工作树，成功后自动归档为 profile 级 adopted patch，并写入 success lock。
+- Docker image 只固定构建环境，不包含 OpenWrt、feeds 或 plugins 源码。
+- AI 修复只允许修改当前 run 工作树，成功后自动归档为 `workspace_id/build_id` 级 adopted patch，并写入 success lock。
 - 构建流水线是编排层，只通过接口调用配置、健康检查、源码、插件、执行器、诊断、AI 修复和产物记录模块。

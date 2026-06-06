@@ -12,11 +12,11 @@ depends_on:
 
 ## 背景
 
-AI 修复在当前 run 工作树中修改源码。若修复后的构建成功，用户希望后续同 profile 构建能自动复用这次成功修复；但直接把 AI 修改写入共享源码基线会降低审计和回滚能力。
+AI 修复在当前 run 工作树中修改源码。若修复后的构建成功，用户希望后续同 `workspace_id/build_id` 构建能自动复用这次成功修复；但直接把 AI 修改写入源码缓存基线会降低审计和回滚能力。
 
 ## 决策
 
-AI 修复后的构建成功时，系统自动把最终源码差异归档为 profile 级 adopted patch，并把 adopted patch id 写入 success lock。后续同 profile 构建准备运行工作树时，必须按 success lock 记录应用这些 adopted patches。
+AI 修复后的构建成功时，系统自动把最终源码差异归档为 `workspace_id/build_id` 级 adopted patch，并把 adopted patch id 写入 success lock。后续同 `workspace_id/build_id` 构建准备运行工作树时，必须按 success lock 记录应用这些 adopted patches。
 
 AI 修复失败或超过重试次数时，不得生成 adopted patch，不得更新 success lock。
 
@@ -31,5 +31,4 @@ AI 修复失败或超过重试次数时，不得生成 adopted patch，不得更
 - Run Record 必须记录 AI repair diff 列表和 adoption result。
 - Success Lock 必须记录 adopted patch ids。
 - 产物归档必须包含 adopted patches 或其索引。
-- 源码管理在准备同 profile 运行工作树时，需要应用 success lock 中的 adopted patches。
-
+- 源码管理在准备同 `workspace_id/build_id` 运行工作树时，需要应用 success lock 中的 adopted patches。
