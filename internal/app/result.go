@@ -6,6 +6,7 @@ const (
 	ExitOK             = 0
 	ExitUsageError     = 2
 	ExitHealthBlocked  = 3
+	ExitSourceError    = 4
 	ExitWorkspaceError = 8
 )
 

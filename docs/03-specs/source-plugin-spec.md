@@ -1,7 +1,7 @@
 ---
 status: accepted
 owner: engineering
-last_updated: 2026-06-06
+last_updated: 2026-06-07
 depends_on:
   - docs/02-architecture/build-pipeline.md
   - docs/02-architecture/data-model.md
@@ -130,9 +130,9 @@ Source Manager 必须输出：
 
 - source version snapshot。
 - source set id。
-- worktree manifest。
+- source update summary。
+- 运行工作树准备完成后的 worktree manifest。
 - adopted patch application result。
-- feed/plugin attach summary。
 
 Plugin Manager 必须输出：
 

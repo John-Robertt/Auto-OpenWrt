@@ -223,6 +223,57 @@ func TestResolveRejectsMissingBuildAndBadRunID(t *testing.T) {
 	expectConfigError(t, err, "run_id")
 }
 
+func TestUpdateSourceSetPlansDeduplicateAllBuilds(t *testing.T) {
+	cfg := mustParseConfig(t, strings.Replace(SampleYAML, "builds:\n", `builds:
+  - id: x86-alt
+    openwrt:
+      target: x86
+      subtarget: "64"
+      profile: generic
+    feeds:
+      - packages
+      - luci
+    plugins:
+      - openclash
+    config:
+      fragments: []
+      packages: []
+      jobs: auto
+`, 1))
+
+	plans, err := UpdateSourceSetPlans(cfg, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) != 1 {
+		t.Fatalf("plans = %d, want deduplicated 1", len(plans))
+	}
+	if plans[0].BuildIDs[0] != "x86-64" || plans[0].BuildIDs[1] != "x86-alt" {
+		t.Fatalf("build ids = %v", plans[0].BuildIDs)
+	}
+	if len(plans[0].Feeds) != 2 || plans[0].Feeds[0].Name != "luci" || plans[0].Feeds[1].Name != "packages" {
+		t.Fatalf("feeds not sorted by name: %#v", plans[0].Feeds)
+	}
+	if len(plans[0].Plugins) != 1 || plans[0].Plugins[0].Risk != "luci-app" {
+		t.Fatalf("plugins = %#v", plans[0].Plugins)
+	}
+}
+
+func TestUpdateSourceSetPlansCanSelectOneBuild(t *testing.T) {
+	cfg := mustParseConfig(t, SampleYAML)
+
+	plans, err := UpdateSourceSetPlans(cfg, "x86-64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) != 1 || len(plans[0].BuildIDs) != 1 || plans[0].BuildIDs[0] != "x86-64" {
+		t.Fatalf("plans = %#v", plans)
+	}
+
+	_, err = UpdateSourceSetPlans(cfg, "missing")
+	expectConfigError(t, err, "build_id")
+}
+
 func mustParseConfig(t *testing.T, content string) *UserConfig {
 	t.Helper()
 	cfg, err := ParseUserConfig([]byte(content))

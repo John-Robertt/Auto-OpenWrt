@@ -118,6 +118,10 @@ func BuildRunRelDir(workspaceID, buildID, runID string) string {
 	return filepath.ToSlash(filepath.Join("workspaces", workspaceID, "runs", buildID, runID))
 }
 
+func UpdateRunRelDir(workspaceID, runID string) string {
+	return filepath.ToSlash(filepath.Join("workspaces", workspaceID, "runs", "update", runID))
+}
+
 func GenerateRunID(root string) (string, error) {
 	for attempts := 0; attempts < 32; attempts++ {
 		runID, err := randomRunID(time.Now().UTC())

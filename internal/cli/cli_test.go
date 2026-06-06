@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -215,23 +216,54 @@ func TestInitRejectsLegacyWorkspaceFlag(t *testing.T) {
 	}
 }
 
-func TestBuildAndUpdateCommandsAreNotImplementedInD2(t *testing.T) {
-	for _, command := range []string{"build", "update"} {
-		t.Run(command, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
+func TestBuildCommandIsNotImplementedInD3(t *testing.T) {
+	var stdout, stderr bytes.Buffer
 
-			code := Run([]string{command}, &stdout, &stderr)
+	code := Run([]string{"build"}, &stdout, &stderr)
 
-			if code != exitUsageError {
-				t.Fatalf("exit code = %d, want %d", code, exitUsageError)
-			}
-			if stdout.Len() != 0 {
-				t.Fatalf("stdout = %q, want empty", stdout.String())
-			}
-			if !strings.Contains(stderr.String(), "not implemented in D2") {
-				t.Fatalf("stderr does not explain D2 boundary:\n%s", stderr.String())
-			}
-		})
+	if code != exitUsageError {
+		t.Fatalf("exit code = %d, want %d", code, exitUsageError)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "not implemented in D2") {
+		t.Fatalf("stderr does not explain boundary:\n%s", stderr.String())
+	}
+}
+
+func TestUpdateCommandWithJSON(t *testing.T) {
+	root := t.TempDir()
+	repo := createCLIGitRepo(t)
+	configPath := filepath.Join(root, "configs", "auto-openwrt.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(minimalUpdateConfig(repo)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{"update", "--project", root, "--build", "x86-64", "--json"}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("exit code = %d, want %d; stderr=%s stdout=%s", code, exitOK, stderr.String(), stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	result := decodeResult(t, stdout.Bytes())
+	if result.Command != "update" || result.Status != "succeeded" {
+		t.Fatalf("result = %#v", result)
+	}
+	if result.RunID == nil || result.SourceSetID == nil || result.BuildID == nil {
+		t.Fatalf("run/source/build ids missing: %#v", result)
+	}
+	if result.Paths["source_update_summary"] == "" {
+		t.Fatalf("source update summary path missing: %#v", result.Paths)
+	}
+	if _, err := os.Stat(result.Paths["source_update_summary"]); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -286,4 +318,81 @@ func decodeResult(t *testing.T, data []byte) app.Result {
 		t.Fatalf("json decode failed: %v\n%s", err, string(data))
 	}
 	return result
+}
+
+func createCLIGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "openwrt")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runCLIGit(t, dir, "init", "-b", "main")
+	runCLIGit(t, dir, "config", "user.email", "test@example.com")
+	runCLIGit(t, dir, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("openwrt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCLIGit(t, dir, "add", ".")
+	runCLIGit(t, dir, "commit", "-m", "initial")
+	return dir
+}
+
+func runCLIGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, string(output))
+	}
+}
+
+func minimalUpdateConfig(repo string) string {
+	return `version: 1
+
+workspace:
+  id: auto-openwrt
+  name: auto-openwrt
+  worktree_storage: auto
+  linux_worktree_root: ""
+
+openwrt:
+  repo: ` + repo + `
+  branch: main
+  update: latest
+
+docker:
+  image: example/build-env:test
+  platform: auto
+
+builds:
+  - id: x86-64
+    openwrt:
+      target: x86
+      subtarget: "64"
+      profile: generic
+    feeds: []
+    plugins: []
+    config:
+      fragments: []
+      packages: []
+      jobs: auto
+
+feeds: []
+plugins: []
+
+health:
+  min_disk_gb: 1
+
+ai_repair:
+  enabled: false
+  command: ""
+  args: []
+  timeout: 30m
+  max_retries: 5
+  adoption: auto
+
+artifacts:
+  retention: keep-all
+`
 }

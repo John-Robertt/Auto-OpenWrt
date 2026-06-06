@@ -174,6 +174,27 @@ known_limits: doctor run、run id 生成、run record、health report、pre-run 
 - 旧 `profiles[]` 配置返回 schema 错误，并提示迁移到 `builds[]`。
 - 多配置同名 build 的状态目录通过 `workspaces/<workspace-id>/` 路径隔离，后续 run record 写入由 D2 实现。
 
+### D3：Source-set 源码与插件更新
+
+```text
+increment_id: D3
+goal: Source-set 源码与插件更新
+upstream_docs: docs/05-implementation-plans/phase-2-build-pipeline.md, docs/03-specs/source-plugin-spec.md, docs/03-specs/cli-spec.md, docs/03-specs/run-record-state-spec.md
+changed_modules: internal/cli, internal/app, internal/config, internal/source, internal/runrecord
+created_artifacts: update 命令实现、source-set 更新计划、Git clone/fetch/reset/clean Source Manager、source-set.json、source-update-summary.json、插件风险识别、D3 config/source/app/CLI 测试
+verification: go test ./...；go run ./cmd/doccheck；git diff --check；本地临时 Git 仓库执行 go run ./cmd/auto-openwrt update --project <tmp> --build x86-64 --json 成功
+known_limits: build 命令、运行工作树准备、feeds/plugins 接入到当前 run 工作树、adopted patch 应用、Docker 构建、产物归档和 failure-index 仍属于 D4-D6
+```
+
+验收结论：
+
+- `update --build <id> --json` 可以创建 update run record，更新对应 source-set cache，并输出 `source_set_id`、`source_set_snapshot` 和 `source_update_summary`。
+- `update` 未指定 `--build` 时使用单个 update run 覆盖当前配置中所有 build 引用的 source-set，并对相同 source-set 去重；多个 source-set 通过 `source-update-summary.json` 记录集合。
+- OpenWrt、feeds 和 plugins cache 遵循 clone 或 fetch/checkout/reset/clean 更新规则，成功后 snapshot 记录 commit 和 `dirty_state: false`。
+- 插件风险识别覆盖显式 risk、patch、`luci-app-*`、`KernelPackage/` 和 unknown 默认路径。
+- 仓库更新失败返回退出码 `4`，错误详情包含仓库名称、repo URL、git command、exit code 和 stderr；配置错误仍返回 `2` 且不创建 run record。
+- D3 不创建运行工作树，不写 success lock，不生成固件产物。
+
 ## 完成标准
 
 v1 开发完成必须同时满足：

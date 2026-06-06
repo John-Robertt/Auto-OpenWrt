@@ -60,7 +60,7 @@ depends_on:
 - `workspaces/<workspace-id>/worktrees/<build-id>/<run-id>/`：当前 run 工作树逻辑目录，保存源码物理目录或 storage pointer；权威 worktree manifest 位于对应 run record 目录。
 - `workspaces/<workspace-id>/runs/<build-id>/<run-id>/`：build run record、日志、worktree manifest、Docker 摘要和健康检查报告。
 - `workspaces/<workspace-id>/runs/doctor/<run-id>/`：绑定配置文件的 doctor 运行记录。
-- `workspaces/<workspace-id>/runs/update/<run-id>/`：update 运行记录。
+- `workspaces/<workspace-id>/runs/update/<run-id>/`：update 运行记录和 `source-update-summary.json`。
 - `workspaces/<workspace-id>/artifacts/<build-id>/<run-id>/`：成功构建产物。
 - `workspaces/<workspace-id>/artifacts/.staging/<build-id>/<run-id>/`：成功产物 finalize 前的 staging 目录。
 - `workspaces/<workspace-id>/diagnostics/<build-id>/<run-id>/`：失败诊断上下文和失败索引。

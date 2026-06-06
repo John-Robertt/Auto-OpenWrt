@@ -130,6 +130,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	if cmd.name == "doctor" {
 		return runDoctor(args[1:], stdout, stderr)
 	}
+	if cmd.name == "update" {
+		return runUpdate(args[1:], stdout, stderr)
+	}
 	if cmd.name == "logs" {
 		return runLogs(args[1:], stdout, stderr)
 	}
@@ -234,6 +237,55 @@ type logsFlags struct {
 	runID   string
 	latest  bool
 	json    bool
+}
+
+type updateFlags struct {
+	project string
+	config  string
+	buildID string
+	json    bool
+	verbose bool
+}
+
+func runUpdate(args []string, stdout, stderr io.Writer) int {
+	flags, parseErr := parseUpdateFlags(args)
+	if parseErr != nil {
+		result := app.Failed("update", absoluteOrEmpty(flags.project), &app.Error{
+			Code:       "INVALID_ARGUMENT",
+			Message:    parseErr.reason,
+			Suggestion: parseErr.suggestion,
+			Details:    map[string]any{},
+		})
+		if flags.json {
+			printJSON(stdout, result)
+		} else {
+			printUsageError(stderr, parseErr.reason, parseErr.suggestion)
+		}
+		return exitUsageError
+	}
+
+	result, code := app.Update(context.Background(), app.UpdateOptions{
+		Project: flags.project,
+		Config:  flags.config,
+		BuildID: flags.buildID,
+	})
+	if flags.json {
+		printJSON(stdout, result)
+		return code
+	}
+	if code == exitOK {
+		fmt.Fprintf(stdout, "update run: %s\n", deref(result.RunID))
+		fmt.Fprintf(stdout, "run record: %s\n", result.Paths["run_record"])
+		if result.Paths["source_update_summary"] != "" {
+			fmt.Fprintf(stdout, "source update summary: %s\n", result.Paths["source_update_summary"])
+		}
+		return code
+	}
+	printAppError(stderr, result.Error)
+	if result.Paths["run_record"] != "" {
+		fmt.Fprintf(stderr, "run record: %s\n", result.Paths["run_record"])
+	}
+	return code
 }
 
 func runLogs(args []string, stdout, stderr io.Writer) int {
@@ -358,6 +410,61 @@ func parseDoctorFlags(args []string) (doctorFlags, *parseError) {
 				return flags, &parseError{fmt.Sprintf("unknown flag %q", arg), "Run auto-openwrt doctor --help to see supported flags."}
 			}
 			return flags, &parseError{fmt.Sprintf("unexpected argument %q", arg), "Run auto-openwrt doctor --help to see the command format."}
+		}
+	}
+	return flags, nil
+}
+
+func parseUpdateFlags(args []string) (updateFlags, *parseError) {
+	flags := updateFlags{project: "."}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--project":
+			value, next, err := requireValue(args, i, "--project", "Pass --project <path>.")
+			if err != nil {
+				return flags, err
+			}
+			flags.project = value
+			i = next
+		case strings.HasPrefix(arg, "--project="):
+			flags.project = strings.TrimPrefix(arg, "--project=")
+			if flags.project == "" {
+				return flags, &parseError{"--project requires a path", "Pass --project <path>."}
+			}
+		case arg == "--config":
+			value, next, err := requireValue(args, i, "--config", "Pass --config <path>.")
+			if err != nil {
+				return flags, err
+			}
+			flags.config = value
+			i = next
+		case strings.HasPrefix(arg, "--config="):
+			flags.config = strings.TrimPrefix(arg, "--config=")
+			if flags.config == "" {
+				return flags, &parseError{"--config requires a path", "Pass --config <path>."}
+			}
+		case arg == "--build":
+			value, next, err := requireValue(args, i, "--build", "Pass --build <id>.")
+			if err != nil {
+				return flags, err
+			}
+			flags.buildID = value
+			i = next
+		case strings.HasPrefix(arg, "--build="):
+			flags.buildID = strings.TrimPrefix(arg, "--build=")
+			if flags.buildID == "" {
+				return flags, &parseError{"--build requires an id", "Pass --build <id>."}
+			}
+		case arg == "--json":
+			flags.json = true
+		case arg == "--verbose":
+			flags.verbose = true
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return flags, &parseError{fmt.Sprintf("unknown flag %q", arg), "Run auto-openwrt update --help to see supported flags."}
+			}
+			return flags, &parseError{fmt.Sprintf("unexpected argument %q", arg), "Run auto-openwrt update --help to see the command format."}
 		}
 	}
 	return flags, nil

@@ -16,6 +16,8 @@ Run Record 是一次 build、doctor 或 update 的状态事实来源。Build App
 
 Build run 必须归属到具体 `workspace_id/build_id`，并记录本次 resolved config 的 `source_set_id`。Doctor 和 update run 可以不关联 build，但如果命令指定了 `--config` 或 `--build`，run record 必须记录解析出的 `workspace_id` 或 `build_id`。
 
+`update --build` 只涉及一个 source-set 时，update run 顶层必须记录 `source_set_id`。`update` 未指定 `--build` 且涉及多个 source-set 时，顶层 `source_set_id` 可以为空，但必须通过 `source-update-summary.json` 记录本次 source-set 集合。
+
 ## Pre-run Bootstrap
 
 `build`、`update` 和绑定配置文件或 build 的 `doctor` 在创建正式 run record 前，必须先用命令参数和 user config 执行最小配置解析。
@@ -67,6 +69,17 @@ build run 使用固定 stage id：
 
 阶段状态允许值：`pending`、`running`、`succeeded`、`failed`、`skipped`。
 
+## Update 阶段 ID
+
+update run 使用固定 stage id：
+
+| 顺序 | stage id | 对应阶段 |
+| --- | --- | --- |
+| 1 | `run.create` | 创建 run record |
+| 2 | `config.read` | 记录 pre-run bootstrap 使用的 user config 快照 |
+| 3 | `config.resolve` | 解析 workspace、build 和 source-set 集合 |
+| 4 | `source.update` | 更新 source-set 源码缓存并写入版本摘要 |
+
 ## 最终状态
 
 最终状态允许值：
@@ -96,6 +109,8 @@ build run 使用固定 stage id：
 - 阶段结束时写 end time、status、result paths、error 和 suggestion。
 - 阶段失败后，后续未执行阶段保持 `pending` 或写为 `skipped`。
 - run final status 写入后必须删除 `run.lock`。
+
+update run 成功时，run record paths 必须包含 `source_update_summary`。仅涉及一个 source-set 时，paths 还应包含 `source_set_snapshot`。
 
 ## 崩溃恢复
 

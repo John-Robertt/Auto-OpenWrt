@@ -98,7 +98,7 @@ auto-openwrt <command> [flags]
 - `status` 允许值：`succeeded`、`failed`、`blocked`。
 - `project_root` 必须为绝对路径。
 - `workspace_id` 对已解析配置的 `build`、`doctor`、`update` 和 `logs` 输出必填；`init` 可为空。
-- `source_set_id` 对已解析 build 源码输入的 `build` 和 `update` 输出必填；其他命令可为空。
+- `source_set_id` 对已解析单个 build 源码输入的 `build` 和 `update --build` 输出必填；`update` 未指定 `--build` 且涉及多个 source-set 时为空，并通过 `paths.source_update_summary` 记录 source-set 集合。
 - `build_id` 对 `build` 必填，对 `doctor` 和 `update` 可为空。
 - `run_id` 对成功创建 run record 的命令必填。
 - `paths` 只放结构化路径索引，如 run record、health report、artifact index、failure index。
@@ -232,6 +232,8 @@ auto-openwrt update [--project <path>] [--config <path>] [--build <id>] [--json]
 
 - 指定 `--build` 时，只更新该 build 对应的 source-set cache。
 - 未指定 `--build` 时，更新当前 config 中所有 build 引用的 source-set cache。
+- 未指定 `--build` 且多个 build 解析到相同 source-set 时，只更新一次该 source-set cache。
+- 未指定 `--build` 且涉及多个 source-set 时，命令仍只创建一个 update run record；JSON 顶层 `source_set_id` 为空，`paths.source_update_summary` 必须指向本次更新的 source-set 集合摘要。
 - build 不存在、build 引用不存在或 disabled feed/plugin 时返回 `2`，不创建 run record。
 - `update` 不创建构建运行工作树，不写 success lock，不生成固件产物。
 - 任一仓库更新失败时返回 `4`，并在错误详情中包含仓库名称和 repo URL。

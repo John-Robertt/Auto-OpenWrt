@@ -149,6 +149,28 @@ Source Set 表示一组可复用但不可被构建流程直接修改的源码缓
 - 创建者：Source Manager。
 - 更新规则：源码更新阶段更新缓存后写入；成功更新后的 dirty state 必须为 `false`。
 
+## Source Update Summary
+
+Source Update Summary 表示一次 `update` run 涉及的 source-set 集合和源码版本摘要。
+
+持久化契约：
+
+- 格式：JSON。
+- 路径：`workspaces/<workspace-id>/runs/update/<run-id>/source-update-summary.json`。
+- 创建者：Source Manager。
+- 写入时机：本次 update 选择的 source-set cache 全部成功更新后。
+- 写入规则：写入成功后由 update run record 的 `source_update_summary` path 引用。
+
+必须包含：
+
+- `schema_version`。
+- `workspace_id`。
+- `build_id`，未指定 `--build` 时可为空。
+- `run_id`。
+- `source_set_ids`。
+- 每个 source-set 的 OpenWrt、feeds、plugins repo、branch、commit、cache path、dirty state 和插件风险类型。
+- update time。
+
 ## Resolved Config
 
 Resolved Config 是本次 run 的完整配置快照，包含用户配置、默认值、build 展开结果、风险信息和将要应用的 adopted patches。
