@@ -25,7 +25,7 @@ func validateUserConfig(cfg *UserConfig) error {
 	if cfg.Workspace.WorktreeStorage != "" && !oneOf(cfg.Workspace.WorktreeStorage, "auto", "host-path", "docker-volume", "linux-path") {
 		return newConfigError("CONFIG_SCHEMA_ERROR", "workspace.worktree_storage", "workspace.worktree_storage 不受支持", "使用 auto、host-path、docker-volume 或 linux-path")
 	}
-	if cfg.Workspace.WorktreeStorage == "linux-path" && !filepath.IsAbs(cfg.Workspace.LinuxWorktreeRoot) {
+	if cfg.Workspace.LinuxWorktreeRoot != "" && !filepath.IsAbs(cfg.Workspace.LinuxWorktreeRoot) {
 		return newConfigError("CONFIG_SCHEMA_ERROR", "workspace.linux_worktree_root", "linux-path 需要绝对路径", "为 workspace.linux_worktree_root 设置绝对路径")
 	}
 

@@ -90,6 +90,8 @@ Plugin Manager 负责把 resolved config 中声明的 feeds/plugins 接入当前
 接入规则：
 
 - 生成 `feeds.conf` 时，若工作树存在 `feeds.conf.default`，先复制其内容；resolved config 中同名 feed 覆盖默认条目。
+- `host-path` 和 `linux-path` 直接在宿主可访问的当前 run 工作树中写入 `feeds.conf`。
+- `docker-volume` 必须通过 helper container 读取 volume 内 `/openwrt/feeds.conf.default`，生成新的 `feeds.conf`，再写回 volume 内 `/openwrt/feeds.conf`；宿主不得把 Docker volume 当作普通目录直接写入。
 - feed 类型使用 `src-link <name> <container-cache-path>`。
 - Docker Executor 必须把 `sources/source-sets/<source-set-id>/feeds/<name>/` 以只读方式映射到 `<container-cache-path>`。
 - 构建前必须在 Docker 内执行 `./scripts/feeds update -a` 和 `./scripts/feeds install -a`。
@@ -104,10 +106,18 @@ Plugin Manager 负责把 resolved config 中声明的 feeds/plugins 接入当前
 - `patch`：把 `sources/source-sets/<source-set-id>/plugins/<name>/<path>` 下的 `.patch` 或 `.diff` 文件按文件名排序后应用到当前 run 工作树。
 - `unknown`：按 `package` 处理，并把风险类型记录为 `unknown`。
 
+`docker-volume` 规则：
+
+- `feed` plugin 通过 helper container 更新 volume 内 `/openwrt/feeds.conf`。
+- `package` 和 `unknown` plugin 通过 helper container 从只读 source-set cache 拷贝到 volume 内 `/openwrt/package/auto-openwrt/<name>/`。
+- `patch` plugin 通过 helper container 在 volume 内 `/openwrt` 执行 `git apply --check` 和 `git apply`。
+- helper container 使用 resolved `docker.image`；`docker.platform` 非 `auto` 时必须传递给 helper container。
+- helper container 只能挂载当前 run Docker volume 和必要的只读 source-set cache，不得挂载 project root、locks 或 adopted patches 目录。
+
 失败规则：
 
-- plugin 源路径不存在时，构建上下文校验失败。
-- patch plugin 执行 `git apply --check` 失败时，构建上下文校验失败。
+- plugin 源路径不存在时，`plugins.attach` 阶段失败。
+- patch plugin 执行 `git apply --check` 失败时，`plugins.attach` 阶段失败。
 - plugin 接入不得修改 `sources/source-sets/` 源码缓存。
 
 ## 风险识别

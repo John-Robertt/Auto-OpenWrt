@@ -8,10 +8,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/John-Robertt/Auto-OpenWrt/internal/config"
+	"github.com/John-Robertt/Auto-OpenWrt/internal/source"
 	"github.com/John-Robertt/Auto-OpenWrt/internal/workspace"
 )
 
@@ -68,11 +71,26 @@ type PreflightInput struct {
 
 type Checker interface {
 	Preflight(context.Context, PreflightInput) (*Report, error)
+	BuildContext(context.Context, BuildContextInput) (*Report, error)
+}
+
+type BuildContextInput struct {
+	RunID         string
+	ProjectRoot   string
+	WorkspaceID   string
+	SourceSetID   string
+	BuildID       string
+	Resolved      *config.ResolvedConfig
+	Manifest      source.WorktreeManifest
+	ManifestPath  string
+	AttachSummary *source.AttachSummary
+	Existing      *Report
 }
 
 type DefaultChecker struct {
-	Probe Probe
-	Now   func() time.Time
+	Probe  Probe
+	Docker source.DockerRunner
+	Now    func() time.Time
 }
 
 type Probe interface {
@@ -181,6 +199,51 @@ func (c DefaultChecker) Preflight(ctx context.Context, input PreflightInput) (*R
 	return report, nil
 }
 
+func (c DefaultChecker) BuildContext(ctx context.Context, input BuildContextInput) (*Report, error) {
+	probe := c.Probe
+	if probe == nil {
+		probe = OSProbe{}
+	}
+	report := input.Existing
+	if report == nil {
+		report = &Report{
+			SchemaVersion: SchemaVersion,
+			RunID:         input.RunID,
+			ProjectRoot:   input.ProjectRoot,
+			Preflight:     []Item{},
+		}
+	}
+	report.WorkspaceID = stringPtr(input.WorkspaceID)
+	report.SourceSetID = stringPtr(input.SourceSetID)
+	report.BuildID = stringPtr(input.BuildID)
+	report.WorktreeStorageDriver = input.Manifest.StorageDriver
+	report.LogicalWorktreeID = input.Manifest.LogicalWorktreeID
+	report.PhysicalWorktreePath = input.Manifest.PhysicalSourcePath
+	report.DockerVolumeName = input.Manifest.DockerVolumeName
+	if input.Resolved != nil {
+		report.DockerImage = input.Resolved.Docker.Image
+		report.DockerPlatform = input.Resolved.Docker.Platform
+		report.PluginRisks = pluginRisks(input.Resolved.Plugins)
+		report.AIRepairAvailable = !input.Resolved.AIRepair.Enabled || input.Manifest.StorageDriver != "docker-volume"
+	}
+
+	items := []Item{
+		manifestItem(input.ManifestPath, input.Manifest),
+		worktreeExistsItem(input.Manifest),
+		worktreeWritableItem(probe, input.Manifest),
+		filesystemItem(input.Manifest),
+		openWrtTargetItem(ctx, c.Docker, input.Resolved, input.Manifest),
+		dockerMappingItem(input.Resolved, input.Manifest),
+		dockerMountScopeItem(input.ProjectRoot, input.Manifest, input.AttachSummary),
+		pluginRiskItem(input.AttachSummary),
+		pluginAttachItem(input.AttachSummary),
+		aiWorktreeAccessItem(input.Resolved, input.Manifest),
+	}
+	report.BuildContext = items
+	report.CanContinue = canContinue(report.Preflight) && canContinue(report.BuildContext)
+	return report, nil
+}
+
 func WriteReport(path string, report *Report) error {
 	if report == nil {
 		return errors.New("health report is nil")
@@ -191,6 +254,233 @@ func WriteReport(path string, report *Report) error {
 	}
 	data = append(data, '\n')
 	return workspace.AtomicWriteFile(path, data, 0o644)
+}
+
+func manifestItem(path string, manifest source.WorktreeManifest) Item {
+	if path == "" {
+		return failItem("worktree.manifest", "worktree manifest 缺失", "manifest path 为空", "重新运行 build 以准备运行工作树")
+	}
+	if _, err := os.Stat(path); err != nil {
+		return failItem("worktree.manifest", "worktree manifest 不可读", err.Error(), "重新运行 build，或检查 run record 目录权限")
+	}
+	if manifest.SchemaVersion != SchemaVersion {
+		return failItem("worktree.manifest", "worktree manifest schema_version 不匹配", "schema_version 非 1", "清理该 run 后重新运行 build")
+	}
+	return passItem("worktree.manifest", "worktree manifest 可用", path, "无需操作")
+}
+
+func worktreeExistsItem(manifest source.WorktreeManifest) Item {
+	if manifest.StorageDriver == "docker-volume" {
+		if manifest.DockerVolumeName == "" {
+			return failItem("worktree.exists", "Docker volume 未记录", "manifest 缺少 docker_volume_name", "重新准备运行工作树")
+		}
+		return passItem("worktree.exists", "Docker volume 工作树已记录", manifest.DockerVolumeName, "无需操作")
+	}
+	if manifest.PhysicalSourcePath == "" {
+		return failItem("worktree.exists", "工作树物理路径为空", "manifest 缺少 physical_source_path", "重新准备运行工作树")
+	}
+	info, err := os.Stat(manifest.PhysicalSourcePath)
+	if err != nil {
+		return failItem("worktree.exists", "工作树不存在", err.Error(), "重新运行 build 以创建当前 run 工作树")
+	}
+	if !info.IsDir() {
+		return failItem("worktree.exists", "工作树路径不是目录", manifest.PhysicalSourcePath, "清理该路径后重新运行 build")
+	}
+	return passItem("worktree.exists", "工作树存在", manifest.PhysicalSourcePath, "无需操作")
+}
+
+func worktreeWritableItem(probe Probe, manifest source.WorktreeManifest) Item {
+	if manifest.StorageDriver == "docker-volume" {
+		return passItem("worktree.read_write", "Docker volume 工作树由 Docker 管理", manifest.DockerVolumeName, "无需操作")
+	}
+	return pathWritableItem(probe, "worktree.read_write", manifest.PhysicalSourcePath, "当前 run 工作树可读写", "当前 run 工作树不可写")
+}
+
+func filesystemItem(manifest source.WorktreeManifest) Item {
+	if manifest.StorageDriver == "host-path" && !manifest.CaseSensitive {
+		return warnItem("worktree.filesystem", "host-path 文件系统大小写不敏感", manifest.FilesystemRisk, "切换到 docker-volume 或 linux-path")
+	}
+	return passItem("worktree.filesystem", "工作树文件系统满足 D4 校验", manifest.StorageDriver, "无需操作")
+}
+
+func openWrtTargetItem(ctx context.Context, runner source.DockerRunner, resolved *config.ResolvedConfig, manifest source.WorktreeManifest) Item {
+	if resolved == nil {
+		return failItem("openwrt.target", "resolved config 缺失", "无法校验 OpenWrt target", "先完成 config.resolve")
+	}
+	if manifest.StorageDriver == "docker-volume" {
+		return openWrtTargetDockerVolumeItem(ctx, runner, resolved, manifest)
+	}
+	root := manifest.PhysicalSourcePath
+	targetDir := filepath.Join(root, "target", "linux", resolved.Build.Target)
+	subtargetDir := filepath.Join(targetDir, resolved.Build.Subtarget)
+	if info, err := os.Stat(targetDir); err != nil || !info.IsDir() {
+		return failItem("openwrt.target", "OpenWrt target 不存在", targetDir, "检查 builds[].openwrt.target")
+	}
+	if info, err := os.Stat(subtargetDir); err != nil || !info.IsDir() {
+		return failItem("openwrt.target", "OpenWrt subtarget 不存在", subtargetDir, "检查 builds[].openwrt.subtarget")
+	}
+	if !profileExists(targetDir, resolved.Build.Profile) {
+		return failItem("openwrt.target", "OpenWrt device profile 不存在", resolved.Build.Profile, "检查 builds[].openwrt.profile")
+	}
+	return passItem("openwrt.target", "OpenWrt target/subtarget/profile 有效", resolved.Build.Target+"/"+resolved.Build.Subtarget+"/"+resolved.Build.Profile, "无需操作")
+}
+
+func openWrtTargetDockerVolumeItem(ctx context.Context, runner source.DockerRunner, resolved *config.ResolvedConfig, manifest source.WorktreeManifest) Item {
+	if manifest.DockerVolumeName == "" {
+		return failItem("openwrt.target", "Docker volume 未记录", "manifest 缺少 docker_volume_name", "重新准备运行工作树")
+	}
+	if runner == nil {
+		runner = dockerExecRunner{}
+	}
+	targetDir := "/openwrt/target/linux/" + resolved.Build.Target
+	subtargetDir := targetDir + "/" + resolved.Build.Subtarget
+	needleA := "DEVICE_" + resolved.Build.Profile
+	needleB := "Device/" + resolved.Build.Profile
+	command := "test -d " + shellQuote(targetDir) + " && test -d " + shellQuote(subtargetDir) + " && grep -R -q -e " + shellQuote(needleA) + " -e " + shellQuote(needleB) + " " + shellQuote(targetDir)
+	args := dockerHelperArgs(resolved, []string{"-v", manifest.DockerVolumeName + ":/openwrt"}, command)
+	if result := runner.Run(ctx, args...); !result.Success() {
+		detail := strings.TrimSpace(result.Stderr)
+		if detail == "" {
+			detail = resolved.Build.Target + "/" + resolved.Build.Subtarget + "/" + resolved.Build.Profile
+		}
+		return failItem("openwrt.target", "OpenWrt target/subtarget/profile 不存在", detail, "检查 builds[].openwrt target、subtarget 和 profile")
+	}
+	return passItem("openwrt.target", "OpenWrt target/subtarget/profile 有效", resolved.Build.Target+"/"+resolved.Build.Subtarget+"/"+resolved.Build.Profile, "无需操作")
+}
+
+func dockerMappingItem(resolved *config.ResolvedConfig, manifest source.WorktreeManifest) Item {
+	if resolved == nil {
+		return failItem("docker.mapping", "Docker 映射无法解析", "resolved config 缺失", "先完成 config.resolve")
+	}
+	if resolved.Docker.Image == "" {
+		return failItem("docker.mapping", "Docker image 为空", "resolved docker.image 为空", "设置 docker.image")
+	}
+	if manifest.StorageDriver == "docker-volume" && manifest.DockerVolumeName == "" {
+		return failItem("docker.mapping", "Docker volume 映射缺失", "manifest 未记录 volume", "重新准备运行工作树")
+	}
+	if manifest.StorageDriver != "docker-volume" && manifest.PhysicalSourcePath == "" {
+		return failItem("docker.mapping", "宿主工作树映射缺失", "manifest 未记录 physical_source_path", "重新准备运行工作树")
+	}
+	return passItem("docker.mapping", "Docker 映射信息明确", resolved.Docker.Image+" -> "+manifest.ContainerPath, "无需操作")
+}
+
+func dockerMountScopeItem(projectRoot string, manifest source.WorktreeManifest, attach *source.AttachSummary) Item {
+	if manifest.PhysicalSourcePath != "" && sameCleanPath(projectRoot, manifest.PhysicalSourcePath) {
+		return failItem("docker.mount_scope", "Docker mount 范围包含 project root", manifest.PhysicalSourcePath, "只挂载当前 run 工作树")
+	}
+	if attach != nil {
+		for _, entry := range append(append([]source.AttachEntry{}, attach.Feeds...), attach.Plugins...) {
+			if sameCleanPath(projectRoot, entry.SourcePath) || sameCleanPath(projectRoot, entry.TargetPath) {
+				return failItem("docker.mount_scope", "Docker mount 范围包含 project root", entry.SourcePath, "只挂载当前 run 工作树、缓存、artifact staging 和必要 source-set cache")
+			}
+		}
+	}
+	return passItem("docker.mount_scope", "Docker mount 范围未包含 project root", "D4 仅记录允许映射材料", "无需操作")
+}
+
+func pluginRiskItem(attach *source.AttachSummary) Item {
+	if attach == nil {
+		return failItem("plugins.risk", "插件风险信息缺失", "attach summary 为空", "先完成 plugins.attach")
+	}
+	return passItem("plugins.risk", "插件风险已写入上下文", "plugins: "+itoa(len(attach.Plugins)), "无需操作")
+}
+
+func pluginAttachItem(attach *source.AttachSummary) Item {
+	if attach == nil {
+		return failItem("plugins.attach", "插件接入摘要缺失", "attach summary 为空", "先完成 plugins.attach")
+	}
+	return passItem("plugins.attach", "feeds/plugins 接入材料存在", "feeds: "+itoa(len(attach.Feeds))+", plugins: "+itoa(len(attach.Plugins)), "无需操作")
+}
+
+func aiWorktreeAccessItem(resolved *config.ResolvedConfig, manifest source.WorktreeManifest) Item {
+	if resolved == nil || !resolved.AIRepair.Enabled {
+		return passItem("ai.worktree_access", "AI 修复未启用", "ai_repair.enabled=false", "无需操作")
+	}
+	if manifest.StorageDriver == "docker-volume" {
+		return failItem("ai.worktree_access", "AI CLI 无法访问 docker-volume 工作树", "docker-volume 没有宿主源码路径", "切换 workspace.worktree_storage 到 host-path 或 linux-path")
+	}
+	if manifest.PhysicalSourcePath == "" {
+		return failItem("ai.worktree_access", "AI CLI 工作树路径为空", "manifest 缺少宿主源码路径", "重新准备运行工作树")
+	}
+	return passItem("ai.worktree_access", "AI CLI 可访问当前 run 工作树路径", manifest.PhysicalSourcePath, "无需操作")
+}
+
+func profileExists(targetDir, profile string) bool {
+	found := false
+	needleA := "DEVICE_" + profile
+	needleB := "Device/" + profile
+	_ = filepath.WalkDir(targetDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || found || entry.IsDir() {
+			return nil
+		}
+		if filepath.Ext(entry.Name()) != ".mk" && entry.Name() != "Makefile" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		text := string(data)
+		if strings.Contains(text, needleA) || strings.Contains(text, needleB) {
+			found = true
+		}
+		return nil
+	})
+	return found
+}
+
+func sameCleanPath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return filepath.Clean(absA) == filepath.Clean(absB)
+}
+
+type dockerExecRunner struct{}
+
+func (dockerExecRunner) Run(ctx context.Context, args ...string) source.GitResult {
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	result := source.GitResult{Stdout: stdout.String(), Stderr: stderr.String(), Err: err}
+	if err == nil {
+		return result
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		result.ExitCode = exitErr.ExitCode()
+	} else {
+		result.ExitCode = -1
+	}
+	return result
+}
+
+func dockerHelperArgs(resolved *config.ResolvedConfig, mounts []string, command string) []string {
+	args := []string{"run", "--rm"}
+	if resolved.Docker.Platform != "" && resolved.Docker.Platform != "auto" {
+		args = append(args, "--platform", resolved.Docker.Platform)
+	}
+	args = append(args, mounts...)
+	args = append(args, resolved.Docker.Image, "sh", "-lc", command)
+	return args
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func stringPtr(value string) *string {
+	return &value
+}
+
+func itoa(value int) string {
+	return strconv.Itoa(value)
 }
 
 func (OSProbe) LookPath(file string) (string, error) {

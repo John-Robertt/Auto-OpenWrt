@@ -124,6 +124,242 @@ func TestDetectPluginRisk(t *testing.T) {
 	}
 }
 
+func TestPrepareWorktreeAndAttachPackagePlugin(t *testing.T) {
+	root := t.TempDir()
+	store, err := workspace.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	openwrtRepo := createGitRepo(t, "openwrt", map[string]string{
+		"README.md":                    "openwrt\n",
+		"feeds.conf.default":           "src-git base https://example.invalid/base.git\n",
+		"target/linux/x86/64/Makefile": "subtarget\n",
+		"target/linux/x86/image/64.mk": "define Device/generic\nendef\nTARGET_DEVICES += generic\n",
+	})
+	feedRepo := createGitRepo(t, "packages", map[string]string{"README.md": "feed\n"})
+	pluginRepo := createGitRepo(t, "plugin", map[string]string{"luci-app-demo/Makefile": "include $(TOPDIR)/rules.mk\n"})
+	cfg := sourceTestConfig(openwrtRepo, feedRepo, pluginRepo)
+	plans, err := config.UpdateSourceSetPlans(cfg, "x86-64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := Manager{Store: store}
+	runID := "20260607T010203Z-abc123"
+	runDir := filepath.Join(root, "workspaces", "auto-openwrt", "runs", "x86-64", runID)
+	if _, err := manager.Update(context.Background(), UpdateInput{
+		WorkspaceID: "auto-openwrt",
+		BuildID:     stringPtr("x86-64"),
+		RunID:       runID,
+		RunDir:      runDir,
+		Plans:       plans,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := config.Resolve(config.ResolveInput{
+		Config:      cfg,
+		ProjectRoot: root,
+		BuildID:     "x86-64",
+		RunID:       runID,
+		Env:         config.ResolveEnv{GOOS: "linux", CaseSensitive: true, CPUCount: 4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prepared, err := manager.PrepareWorktree(context.Background(), PrepareWorktreeInput{Resolved: resolved, RunDir: runDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSONFile(t, prepared.ManifestPath)
+	if prepared.Manifest.PhysicalSourcePath == "" {
+		t.Fatalf("physical source path is empty")
+	}
+	if _, err := os.Stat(filepath.Join(prepared.Manifest.PhysicalSourcePath, "README.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	attached, err := manager.AttachPlugins(context.Background(), AttachInput{
+		Resolved:     resolved,
+		RunDir:       runDir,
+		Manifest:     prepared.Manifest,
+		ManifestPath: prepared.ManifestPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSONFile(t, attached.SummaryPath)
+	feedsConf := filepath.Join(prepared.Manifest.PhysicalSourcePath, "feeds.conf")
+	data, err := os.ReadFile(feedsConf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "src-link packages /auto-openwrt/sources/"+resolved.SourceSetID+"/feeds/packages") {
+		t.Fatalf("feeds.conf missing src-link:\n%s", string(data))
+	}
+	assertFileContent(t, filepath.Join(prepared.Manifest.PhysicalSourcePath, "package", "auto-openwrt", "demo", "Makefile"), "include $(TOPDIR)/rules.mk\n")
+	if len(attached.Summary.Feeds) != 1 || len(attached.Summary.Plugins) != 1 {
+		t.Fatalf("attach summary = %#v", attached.Summary)
+	}
+}
+
+func TestAttachPluginsInDockerVolumeUsesHelperAndWritesSummary(t *testing.T) {
+	root := t.TempDir()
+	store, err := workspace.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceSetID := "src-abc123abc123"
+	feedPath := filepath.Join(root, "sources", "source-sets", sourceSetID, "feeds", "packages")
+	packagePath := filepath.Join(root, "sources", "source-sets", sourceSetID, "plugins", "demo", "luci-app-demo")
+	patchPath := filepath.Join(root, "sources", "source-sets", sourceSetID, "plugins", "fixes")
+	for _, path := range []string{feedPath, packagePath, patchPath} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(packagePath, "Makefile"), []byte("package\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(patchPath, "001.patch"), []byte("patch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolved := &config.ResolvedConfig{
+		WorkspaceID: "auto-openwrt",
+		SourceSetID: sourceSetID,
+		BuildID:     "x86-64",
+		RunID:       "20260607T010203Z-abc123",
+		Docker:      config.ResolvedDocker{Image: "example/build-env:test", Platform: "linux/amd64"},
+		Build: config.ResolvedBuild{
+			ID:      "x86-64",
+			Feeds:   []string{"packages"},
+			Plugins: []string{"demo", "fixes"},
+		},
+		Feeds: []config.ResolvedFeed{{Name: "packages", Enabled: true}},
+		Plugins: []config.ResolvedPlugin{
+			{Name: "demo", Type: "package", Path: "luci-app-demo", Enabled: true, Risk: "luci-app"},
+			{Name: "fixes", Type: "patch", Enabled: true, Risk: "patch"},
+		},
+	}
+	runner := &recordingDockerRunner{stdout: "src-git base https://example.invalid/base.git\n"}
+	manager := Manager{Store: store, Docker: runner, Now: func() time.Time { return time.Date(2026, 6, 7, 1, 2, 3, 0, time.UTC) }}
+
+	result, err := manager.AttachPlugins(context.Background(), AttachInput{
+		Resolved: resolved,
+		RunDir:   filepath.Join(root, "workspaces", "auto-openwrt", "runs", "x86-64", resolved.RunID),
+		Manifest: WorktreeManifest{
+			StorageDriver:    "docker-volume",
+			DockerVolumeName: "auto-openwrt-volume",
+			SourceSetSnapshot: SourceSetSnapshot{
+				Feeds:   []RepositorySnapshot{{Name: "packages", Commit: "feed123"}},
+				Plugins: []PluginSnapshot{{Name: "demo", Commit: "demo123"}, {Name: "fixes", Commit: "fix123"}},
+			},
+		},
+	})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSONFile(t, result.SummaryPath)
+	if len(result.Summary.Feeds) != 1 || len(result.Summary.Plugins) != 2 {
+		t.Fatalf("summary = %#v", result.Summary)
+	}
+	if result.Summary.Plugins[0].TargetPath == "" || result.Summary.Plugins[1].TargetPath == "" {
+		t.Fatalf("plugin target paths missing: %#v", result.Summary.Plugins)
+	}
+	joined := strings.Join(runner.commands, "\n")
+	for _, want := range []string{"--platform linux/amd64", "cp -a /auto-openwrt/plugin/.", "git apply --check", "cp /auto-openwrt/attach/feeds.conf /openwrt/feeds.conf"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("docker helper commands missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+func TestPrepareDockerVolumeWorktreePassesPlatformToHelpers(t *testing.T) {
+	root := t.TempDir()
+	store, err := workspace.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceSetID := "src-abc123abc123"
+	cachePath := filepath.Join(root, "sources", "source-sets", sourceSetID, "openwrt")
+	if err := os.MkdirAll(cachePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := SourceSetSnapshot{
+		SchemaVersion: SchemaVersion,
+		SourceSetID:   sourceSetID,
+		OpenWrt: RepositorySnapshot{
+			Name:      "openwrt",
+			Commit:    "abc123",
+			CachePath: cachePath,
+		},
+	}
+	if err := writeJSON(filepath.Join(root, "sources", "source-sets", sourceSetID, "source-set.json"), snapshot); err != nil {
+		t.Fatal(err)
+	}
+	patchDir := filepath.Join(root, "workspaces", "auto-openwrt", "patches", "adopted", "x86-64")
+	if err := os.MkdirAll(patchDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(patchDir, "patch-1.patch"), []byte("diff\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolved := &config.ResolvedConfig{
+		RunID:       "20260607T010203Z-abc123",
+		WorkspaceID: "auto-openwrt",
+		SourceSetID: sourceSetID,
+		BuildID:     "x86-64",
+		Workspace: config.ResolvedWorkspace{
+			ID:                "auto-openwrt",
+			Name:              "auto-openwrt",
+			WorktreeStorage:   "docker-volume",
+			LogicalWorktreeID: "workspaces/auto-openwrt/worktrees/x86-64/20260607T010203Z-abc123/",
+		},
+		Docker:          config.ResolvedDocker{Image: "example/build-env:test", Platform: "linux/amd64"},
+		AdoptedPatchIDs: []string{"patch-1"},
+	}
+	runner := &recordingDockerRunner{}
+	manager := Manager{Store: store, Docker: runner, Now: func() time.Time { return time.Date(2026, 6, 7, 1, 2, 3, 0, time.UTC) }}
+
+	_, err = manager.PrepareWorktree(context.Background(), PrepareWorktreeInput{
+		Resolved: resolved,
+		RunDir:   filepath.Join(root, "workspaces", "auto-openwrt", "runs", "x86-64", resolved.RunID),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	platformRuns := 0
+	for _, command := range runner.commands {
+		if strings.Contains(command, "run --rm") {
+			if !strings.Contains(command, "--platform linux/amd64") {
+				t.Fatalf("docker helper missing platform:\n%s", command)
+			}
+			platformRuns++
+		}
+	}
+	if platformRuns != 2 {
+		t.Fatalf("platform helper runs = %d, want 2; commands:\n%s", platformRuns, strings.Join(runner.commands, "\n"))
+	}
+}
+
+type recordingDockerRunner struct {
+	commands []string
+	stdout   string
+	err      error
+}
+
+func (r *recordingDockerRunner) Run(ctx context.Context, args ...string) GitResult {
+	r.commands = append(r.commands, strings.Join(args, " "))
+	if r.err != nil {
+		return GitResult{ExitCode: 1, Stderr: "failed", Err: r.err}
+	}
+	if strings.Contains(strings.Join(args, " "), "cat /openwrt/feeds.conf.default") {
+		return GitResult{Stdout: r.stdout}
+	}
+	return GitResult{}
+}
+
 func asRepositoryError(err error, target **RepositoryError) bool {
 	repoErr, ok := err.(*RepositoryError)
 	if ok {
@@ -179,5 +415,67 @@ func assertJSONFile(t *testing.T, path string) {
 	var payload map[string]any
 	if err := json.Unmarshal(data, &payload); err != nil {
 		t.Fatalf("%s is not json: %v", path, err)
+	}
+}
+
+func sourceTestConfig(openwrtRepo, feedRepo, pluginRepo string) *config.UserConfig {
+	return &config.UserConfig{
+		Version: 1,
+		Workspace: config.WorkspaceConfig{
+			ID:              "auto-openwrt",
+			Name:            "auto-openwrt",
+			WorktreeStorage: "host-path",
+		},
+		OpenWrt: config.OpenWrtConfig{Repo: openwrtRepo, Branch: "main", Update: "latest"},
+		Docker:  config.DockerConfig{Image: "example/build-env:test", Platform: "auto"},
+		Builds: []config.BuildConfig{{
+			ID:      "x86-64",
+			OpenWrt: config.BuildOpenWrtConfig{Target: "x86", Subtarget: "64", Profile: "generic"},
+			Feeds:   []string{"packages"},
+			Plugins: []string{"demo"},
+			Config:  config.BuildOptions{Fragments: []string{}, Packages: []string{}, Jobs: "auto"},
+		}},
+		Feeds: []config.FeedConfig{{
+			Name:    "packages",
+			Repo:    feedRepo,
+			Branch:  "main",
+			Path:    "feeds/packages",
+			Enabled: boolPtr(true),
+		}},
+		Plugins: []config.PluginConfig{{
+			Name:    "demo",
+			Type:    "package",
+			Repo:    pluginRepo,
+			Branch:  "main",
+			Path:    "luci-app-demo",
+			Enabled: boolPtr(true),
+			Risk:    "luci-app",
+		}},
+		Health:    config.HealthConfig{MinDiskGB: intPtr(1)},
+		AIRepair:  config.AIRepairConfig{Enabled: boolPtr(false), Timeout: "30m", MaxRetries: intPtr(5), Adoption: "auto"},
+		Artifacts: config.ArtifactsConfig{Retention: "keep-all"},
+	}
+}
+
+func boolPtr(value bool) *bool {
+	return &value
+}
+
+func intPtr(value int) *int {
+	return &value
+}
+
+func stringPtr(value string) *string {
+	return &value
+}
+
+func assertFileContent(t *testing.T, path, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != want {
+		t.Fatalf("%s content = %q, want %q", path, string(data), want)
 	}
 }

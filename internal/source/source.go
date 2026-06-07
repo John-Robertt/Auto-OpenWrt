@@ -20,9 +20,10 @@ import (
 const SchemaVersion = 1
 
 type Manager struct {
-	Store workspace.Store
-	Git   GitRunner
-	Now   func() time.Time
+	Store  workspace.Store
+	Git    GitRunner
+	Docker DockerRunner
+	Now    func() time.Time
 }
 
 type GitRunner interface {

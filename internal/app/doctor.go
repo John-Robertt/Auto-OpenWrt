@@ -21,16 +21,18 @@ type DoctorOptions struct {
 }
 
 type LogsOptions struct {
-	Project string
-	Config  string
-	BuildID string
-	RunID   string
-	Latest  bool
+	Project        string
+	Config         string
+	ConfigExplicit bool
+	BuildID        string
+	RunID          string
+	Latest         bool
 }
 
 type bootstrapResult struct {
 	Store       workspace.Store
 	ConfigPath  string
+	RawConfig   []byte
 	Config      *config.UserConfig
 	WorkspaceID string
 	BuildID     *string
@@ -75,7 +77,20 @@ func Doctor(ctx context.Context, options DoctorOptions) (Result, int) {
 	if err := runStore.StartStage(runDir, "config.read", "记录 user config 快照", time.Now().UTC()); err != nil {
 		return Failed("doctor", store.Root, workspaceWriteError(err)), ExitWorkspaceError
 	}
-	if err := runStore.FinishStage(runDir, "config.read", runrecord.StatusSucceeded, []string{bootstrap.ConfigPath}, nil, "", time.Now().UTC()); err != nil {
+	configSnapshotPath, err := writeConfigSnapshot(runDir, bootstrap.RawConfig)
+	if err != nil {
+		errObj := workspaceErrorObject("CONFIG_SNAPSHOT_WRITE_ERROR", "user config 快照无法写入", "检查 run record 目录权限和磁盘空间", err)
+		_ = runStore.FinishStage(runDir, "config.read", runrecord.StatusFailed, nil, errObj, errObj.Suggestion, time.Now().UTC())
+		_ = runStore.Complete(runDir, runrecord.FinalBlocked, "config-snapshot-write-failed", errObj, time.Now().UTC())
+		return resultFromRun("doctor", store.Root, record, errObj, map[string]string{"run_record": filepath.Join(runDir, "run.json")}, "blocked"), ExitWorkspaceError
+	}
+	if err := runStore.SetPath(runDir, "user_config", configSnapshotPath); err != nil {
+		errObj := workspaceErrorObject("CONFIG_SNAPSHOT_WRITE_ERROR", "user config 快照路径无法写入 run record", "检查 run record 目录权限和磁盘空间", err)
+		_ = runStore.FinishStage(runDir, "config.read", runrecord.StatusFailed, []string{configSnapshotPath}, errObj, errObj.Suggestion, time.Now().UTC())
+		_ = runStore.Complete(runDir, runrecord.FinalBlocked, "config-snapshot-path-write-failed", errObj, time.Now().UTC())
+		return resultFromRun("doctor", store.Root, record, errObj, map[string]string{"run_record": filepath.Join(runDir, "run.json"), "user_config": configSnapshotPath}, "blocked"), ExitWorkspaceError
+	}
+	if err := runStore.FinishStage(runDir, "config.read", runrecord.StatusSucceeded, []string{configSnapshotPath}, nil, "", time.Now().UTC()); err != nil {
 		return Failed("doctor", store.Root, workspaceWriteError(err)), ExitWorkspaceError
 	}
 
@@ -89,7 +104,7 @@ func Doctor(ctx context.Context, options DoctorOptions) (Result, int) {
 			ProjectRoot: store.Root,
 			BuildID:     *bootstrap.BuildID,
 			RunID:       runID,
-			Env:         config.DefaultResolveEnv(),
+			Env:         config.ProjectResolveEnv(store.Root),
 		})
 		if err != nil {
 			errObj := configErrorObject(err)
@@ -137,7 +152,7 @@ func Doctor(ctx context.Context, options DoctorOptions) (Result, int) {
 		return Failed("doctor", store.Root, workspaceWriteError(err)), ExitWorkspaceError
 	}
 
-	paths := map[string]string{"run_record": filepath.Join(runDir, "run.json"), "health_report": healthPath}
+	paths := map[string]string{"run_record": filepath.Join(runDir, "run.json"), "user_config": configSnapshotPath, "health_report": healthPath}
 	if !report.CanContinue {
 		errObj := &runrecord.ErrorObject{Code: "HEALTH_CHECK_FAILED", Message: "健康检查存在阻断项", Suggestion: "按 Health Report 中 fail 项建议修复后重试", Details: map[string]any{"health_report": healthPath}}
 		if err := runStore.FinishStage(runDir, "health.preflight", runrecord.StatusFailed, []string{healthPath}, errObj, errObj.Suggestion, time.Now().UTC()); err != nil {
@@ -165,15 +180,23 @@ func Logs(options LogsOptions) (Result, int) {
 		return Failed("logs", "", invalidProjectError(err)), ExitUsageError
 	}
 
-	bootstrap, result, code := bootstrapDoctor("logs", store, options.Config, options.BuildID)
-	if code != ExitOK {
-		return result, code
+	var workspaceID *string
+	var buildID *string
+	if options.ConfigExplicit || options.Config != "" {
+		bootstrap, result, code := bootstrapDoctor("logs", store, options.Config, options.BuildID)
+		if code != ExitOK {
+			return result, code
+		}
+		workspaceID = &bootstrap.WorkspaceID
+		buildID = bootstrap.BuildID
+	} else if options.BuildID != "" {
+		buildID = &options.BuildID
 	}
 
 	runStore := runrecord.NewStore(store)
 	record, path, err := runStore.FindFinal(runrecord.LatestOptions{
-		WorkspaceID: &bootstrap.WorkspaceID,
-		BuildID:     bootstrap.BuildID,
+		WorkspaceID: workspaceID,
+		BuildID:     buildID,
 		RunID:       options.RunID,
 	})
 	if err != nil {
@@ -187,12 +210,23 @@ func Logs(options LogsOptions) (Result, int) {
 		}
 		return Failed("logs", store.Root, workspaceWriteError(err)), ExitWorkspaceError
 	}
-	return resultFromRun("logs", store.Root, record, nil, map[string]string{"run_record": path}, "succeeded"), ExitOK
+	paths := map[string]string{"run_record": path}
+	for key, value := range record.Paths {
+		if key == "artifact_staging" {
+			continue
+		}
+		paths[key] = value
+	}
+	status := "succeeded"
+	if record.FinalStatus != nil && record.FinalStatus.Status != "" {
+		status = record.FinalStatus.Status
+	}
+	return resultFromRun("logs", store.Root, record, nil, paths, status), ExitOK
 }
 
 func bootstrapDoctor(command string, store workspace.Store, configPathFlag, buildID string) (bootstrapResult, Result, int) {
 	configPath := resolveConfigPath(store, configPathFlag)
-	cfg, err := config.LoadUserConfig(configPath)
+	cfg, raw, err := config.LoadUserConfigSnapshot(configPath)
 	if err != nil {
 		appErr := configAppError(err)
 		return bootstrapResult{}, Failed(command, store.Root, appErr), ExitUsageError
@@ -200,6 +234,7 @@ func bootstrapDoctor(command string, store workspace.Store, configPathFlag, buil
 	bootstrap := bootstrapResult{
 		Store:       store,
 		ConfigPath:  configPath,
+		RawConfig:   raw,
 		Config:      cfg,
 		WorkspaceID: cfg.Workspace.ID,
 	}
@@ -222,6 +257,11 @@ func bootstrapDoctor(command string, store workspace.Store, configPathFlag, buil
 	bootstrap.BuildID = stringPtr(build.ID)
 	bootstrap.SourceSetID = stringPtr(sourceSetID)
 	return bootstrap, Result{}, ExitOK
+}
+
+func writeConfigSnapshot(runDir string, raw []byte) (string, error) {
+	path := filepath.Join(runDir, "user-config.yaml")
+	return path, workspace.AtomicWriteFile(path, raw, 0o644)
 }
 
 func resolveConfigPath(store workspace.Store, value string) string {

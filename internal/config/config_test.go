@@ -68,6 +68,60 @@ func TestSampleConfigResolvesDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadUserConfigDerivesWorkspaceIDFromFilename(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "configs", "router-a.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := strings.Replace(SampleYAML, "  id: auto-openwrt\n", "", 1)
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadUserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Workspace.ID != "router-a" {
+		t.Fatalf("workspace.id = %s, want router-a", cfg.Workspace.ID)
+	}
+}
+
+func TestLoadUserConfigRejectsInvalidDerivedWorkspaceID(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "configs", "-bad.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := strings.Replace(SampleYAML, "  id: auto-openwrt\n", "", 1)
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadUserConfig(path)
+	expectConfigError(t, err, "workspace.id")
+}
+
+func TestResolveAutoStorageUsesDockerVolumeWhenProjectRootIsNotCaseSensitive(t *testing.T) {
+	cfg := mustParseConfig(t, SampleYAML)
+
+	resolved, err := Resolve(ResolveInput{
+		Config:      cfg,
+		ProjectRoot: t.TempDir(),
+		BuildID:     "x86-64",
+		RunID:       testRunID,
+		Env:         ResolveEnv{GOOS: "linux", CaseSensitive: false, CPUCount: 4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resolved.Workspace.WorktreeStorage != "docker-volume" {
+		t.Fatalf("worktree_storage = %s, want docker-volume", resolved.Workspace.WorktreeStorage)
+	}
+}
+
 func TestWriteResolvedConfigIsAtomicAndSingleWrite(t *testing.T) {
 	cfg := mustParseConfig(t, SampleYAML)
 	store, err := workspace.New(t.TempDir())
@@ -178,6 +232,12 @@ func TestConfigValidationErrorsIncludePathAndSuggestion(t *testing.T) {
 			yaml:        strings.Replace(SampleYAML, "min_disk_gb: 80", "min_disk_gb: 0", 1),
 			path:        "health.min_disk_gb",
 			messagePart: "大于 0",
+		},
+		{
+			name:        "relative linux worktree root",
+			yaml:        strings.Replace(SampleYAML, `linux_worktree_root: ""`, `linux_worktree_root: relative/path`, 1),
+			path:        "workspace.linux_worktree_root",
+			messagePart: "绝对路径",
 		},
 	}
 

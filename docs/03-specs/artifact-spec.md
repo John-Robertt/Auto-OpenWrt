@@ -72,6 +72,13 @@ workspaces/<workspace-id>/artifacts/.staging/<build-id>/<run-id>/
 6. 原子写入 `workspaces/<workspace-id>/locks/<build-id>/success-lock.json`。
 7. 更新 run record final status 为 `succeeded`。
 
+固件写入 artifact staging 的来源由 worktree storage driver 决定：
+
+- `host-path` 和 `linux-path`：从当前 run 工作树宿主物理路径的 `bin/targets/<target>/<subtarget>/` 收集。
+- `docker-volume`：通过 helper container 从当前 run Docker volume 内 `/openwrt/bin/targets/<target>/<subtarget>/` 复制到 artifact staging。
+
+`docker-volume` helper 必须使用 resolved `docker.image`；当 resolved `docker.platform` 不是 `auto` 时必须传递 platform。该 helper 只改变固件复制入口，不改变 staging、finalize 和 success lock 的顺序。
+
 可见性规则：
 
 - `logs --latest` 只读取 final status 为 `succeeded`、`failed` 或 `blocked` 的 run。

@@ -130,6 +130,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	if cmd.name == "doctor" {
 		return runDoctor(args[1:], stdout, stderr)
 	}
+	if cmd.name == "build" {
+		return runBuild(args[1:], stdout, stderr)
+	}
 	if cmd.name == "update" {
 		return runUpdate(args[1:], stdout, stderr)
 	}
@@ -137,7 +140,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runLogs(args[1:], stdout, stderr)
 	}
 
-	printUsageError(stderr, fmt.Sprintf("%q is not implemented in D2", cmd.name), "Run auto-openwrt "+cmd.name+" --help for the planned command shape.")
+	printUsageError(stderr, fmt.Sprintf("%q is not implemented", cmd.name), "Run auto-openwrt "+cmd.name+" --help for the planned command shape.")
 	return exitUsageError
 }
 
@@ -231,12 +234,13 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 }
 
 type logsFlags struct {
-	project string
-	config  string
-	buildID string
-	runID   string
-	latest  bool
-	json    bool
+	project        string
+	config         string
+	configExplicit bool
+	buildID        string
+	runID          string
+	latest         bool
+	json           bool
 }
 
 type updateFlags struct {
@@ -245,6 +249,55 @@ type updateFlags struct {
 	buildID string
 	json    bool
 	verbose bool
+}
+
+type buildFlags struct {
+	project string
+	config  string
+	buildID string
+	json    bool
+	verbose bool
+}
+
+func runBuild(args []string, stdout, stderr io.Writer) int {
+	flags, parseErr := parseBuildFlags(args)
+	if parseErr != nil {
+		result := app.Failed("build", absoluteOrEmpty(flags.project), &app.Error{
+			Code:       "INVALID_ARGUMENT",
+			Message:    parseErr.reason,
+			Suggestion: parseErr.suggestion,
+			Details:    map[string]any{},
+		})
+		if flags.json {
+			printJSON(stdout, result)
+		} else {
+			printUsageError(stderr, parseErr.reason, parseErr.suggestion)
+		}
+		return exitUsageError
+	}
+
+	result, code := app.Build(context.Background(), app.BuildOptions{
+		Project: flags.project,
+		Config:  flags.config,
+		BuildID: flags.buildID,
+	})
+	if flags.json {
+		printJSON(stdout, result)
+		return code
+	}
+	if code == exitOK {
+		fmt.Fprintf(stdout, "build run: %s\n", deref(result.RunID))
+		fmt.Fprintf(stdout, "run record: %s\n", result.Paths["run_record"])
+		return code
+	}
+	printAppError(stderr, result.Error)
+	if result.Paths["run_record"] != "" {
+		fmt.Fprintf(stderr, "run record: %s\n", result.Paths["run_record"])
+	}
+	if result.Paths["health_report"] != "" {
+		fmt.Fprintf(stderr, "health report: %s\n", result.Paths["health_report"])
+	}
+	return code
 }
 
 func runUpdate(args []string, stdout, stderr io.Writer) int {
@@ -306,11 +359,12 @@ func runLogs(args []string, stdout, stderr io.Writer) int {
 	}
 
 	result, code := app.Logs(app.LogsOptions{
-		Project: flags.project,
-		Config:  flags.config,
-		BuildID: flags.buildID,
-		RunID:   flags.runID,
-		Latest:  flags.latest,
+		Project:        flags.project,
+		Config:         flags.config,
+		ConfigExplicit: flags.configExplicit,
+		BuildID:        flags.buildID,
+		RunID:          flags.runID,
+		Latest:         flags.latest,
 	})
 	if flags.json {
 		printJSON(stdout, result)
@@ -470,8 +524,8 @@ func parseUpdateFlags(args []string) (updateFlags, *parseError) {
 	return flags, nil
 }
 
-func parseLogsFlags(args []string) (logsFlags, *parseError) {
-	flags := logsFlags{project: ".", latest: true}
+func parseBuildFlags(args []string) (buildFlags, *parseError) {
+	flags := buildFlags{project: "."}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -499,6 +553,66 @@ func parseLogsFlags(args []string) (logsFlags, *parseError) {
 			if flags.config == "" {
 				return flags, &parseError{"--config requires a path", "Pass --config <path>."}
 			}
+		case arg == "--build":
+			value, next, err := requireValue(args, i, "--build", "Pass --build <id>.")
+			if err != nil {
+				return flags, err
+			}
+			flags.buildID = value
+			i = next
+		case strings.HasPrefix(arg, "--build="):
+			flags.buildID = strings.TrimPrefix(arg, "--build=")
+			if flags.buildID == "" {
+				return flags, &parseError{"--build requires an id", "Pass --build <id>."}
+			}
+		case arg == "--json":
+			flags.json = true
+		case arg == "--verbose":
+			flags.verbose = true
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return flags, &parseError{fmt.Sprintf("unknown flag %q", arg), "Run auto-openwrt build --help to see supported flags."}
+			}
+			return flags, &parseError{fmt.Sprintf("unexpected argument %q", arg), "Run auto-openwrt build --help to see the command format."}
+		}
+	}
+	if flags.buildID == "" {
+		return flags, &parseError{"--build is required", "Pass --build <id>."}
+	}
+	return flags, nil
+}
+
+func parseLogsFlags(args []string) (logsFlags, *parseError) {
+	flags := logsFlags{project: ".", latest: true}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--project":
+			value, next, err := requireValue(args, i, "--project", "Pass --project <path>.")
+			if err != nil {
+				return flags, err
+			}
+			flags.project = value
+			i = next
+		case strings.HasPrefix(arg, "--project="):
+			flags.project = strings.TrimPrefix(arg, "--project=")
+			if flags.project == "" {
+				return flags, &parseError{"--project requires a path", "Pass --project <path>."}
+			}
+		case arg == "--config":
+			value, next, err := requireValue(args, i, "--config", "Pass --config <path>.")
+			if err != nil {
+				return flags, err
+			}
+			flags.config = value
+			flags.configExplicit = true
+			i = next
+		case strings.HasPrefix(arg, "--config="):
+			flags.config = strings.TrimPrefix(arg, "--config=")
+			if flags.config == "" {
+				return flags, &parseError{"--config requires a path", "Pass --config <path>."}
+			}
+			flags.configExplicit = true
 		case arg == "--build":
 			value, next, err := requireValue(args, i, "--build", "Pass --build <id>.")
 			if err != nil {

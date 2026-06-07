@@ -7,6 +7,8 @@ const (
 	ExitUsageError     = 2
 	ExitHealthBlocked  = 3
 	ExitSourceError    = 4
+	ExitDockerError    = 5
+	ExitOpenWrtError   = 6
 	ExitWorkspaceError = 8
 )
 

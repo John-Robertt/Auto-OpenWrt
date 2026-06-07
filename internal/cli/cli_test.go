@@ -216,7 +216,7 @@ func TestInitRejectsLegacyWorkspaceFlag(t *testing.T) {
 	}
 }
 
-func TestBuildCommandIsNotImplementedInD3(t *testing.T) {
+func TestBuildCommandRequiresBuildID(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
 	code := Run([]string{"build"}, &stdout, &stderr)
@@ -227,8 +227,8 @@ func TestBuildCommandIsNotImplementedInD3(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %q, want empty", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "not implemented in D2") {
-		t.Fatalf("stderr does not explain boundary:\n%s", stderr.String())
+	if !strings.Contains(stderr.String(), "--build is required") {
+		t.Fatalf("stderr does not explain missing build:\n%s", stderr.String())
 	}
 }
 

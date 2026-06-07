@@ -53,8 +53,15 @@ depends_on:
 - `docker.mapping`：Docker image、platform、volume 或宿主映射路径明确。
 - `docker.mount_scope`：Docker 只挂载当前 run 工作树、缓存、artifact staging 和必要只读 source-set cache。
 - `plugins.risk`：插件风险类型已解析并写入上下文。
-- `plugins.attach`：feeds/plugins 接入材料存在。
+- `plugins.attach`：feeds/plugins 接入摘要存在；plugin 源路径和 patch 检查失败已在 `plugins.attach` 阶段阻断。
 - `ai.worktree_access`：启用 AI 修复时，AI CLI 可访问当前 run 工作树的宿主路径。
+
+`openwrt.target` 对不同 worktree storage driver 的校验入口如下：
+
+- `host-path` 和 `linux-path`：在当前 run 工作树的宿主物理路径内校验。
+- `docker-volume`：通过 helper container 在当前 run Docker volume 的 `/openwrt` 内校验，不得要求宿主直接访问 volume 内容。
+
+`docker-volume` helper 必须使用 resolved `docker.image`；当 resolved `docker.platform` 不是 `auto` 时必须传递 platform。
 
 ## 状态
 
@@ -80,7 +87,7 @@ depends_on:
 - 当前 run 工作树存储不可用或不可写时阻断构建。
 - target、subtarget、device profile 无法在 OpenWrt 源码上下文中验证通过时阻断构建。
 - Docker mount 范围违反 Docker Executor 规格时阻断构建。
-- plugin 接入材料缺失或 patch plugin 检查失败时阻断构建。
+- plugin 接入摘要缺失时阻断构建；plugin 源路径缺失或 patch plugin 检查失败由 `plugins.attach` 阶段阻断。
 - AI 自动修复启用但 AI CLI 不可用、不可执行或无法访问当前 run 工作树时阻断构建。
 - AI 自动修复启用且 resolved storage driver 为 `docker-volume` 时，v1 必须阻断并建议切换到 `host-path` 或 `linux-path`，因为外部 AI CLI 没有宿主可访问的源码路径。
 

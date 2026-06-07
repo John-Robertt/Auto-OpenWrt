@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -12,10 +14,26 @@ func LoadUserConfig(path string) (*UserConfig, error) {
 	if err != nil {
 		return nil, newConfigError("CONFIG_READ_ERROR", "$", "配置文件无法读取", "检查 --config 路径和文件权限")
 	}
-	return ParseUserConfig(data)
+	return parseUserConfig(data, derivedWorkspaceID(path))
+}
+
+func LoadUserConfigSnapshot(path string) (*UserConfig, []byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, newConfigError("CONFIG_READ_ERROR", "$", "配置文件无法读取", "检查 --config 路径和文件权限")
+	}
+	cfg, err := parseUserConfig(data, derivedWorkspaceID(path))
+	if err != nil {
+		return nil, nil, err
+	}
+	return cfg, append([]byte{}, data...), nil
 }
 
 func ParseUserConfig(data []byte) (*UserConfig, error) {
+	return parseUserConfig(data, "")
+}
+
+func parseUserConfig(data []byte, defaultWorkspaceID string) (*UserConfig, error) {
 	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
 		return nil, newConfigError("YAML_PARSE_ERROR", "$", "配置文件无法解析为 YAML", "检查 YAML 语法并重新运行命令")
@@ -44,10 +62,19 @@ func ParseUserConfig(data []byte) (*UserConfig, error) {
 	if cfg.Plugins == nil {
 		cfg.Plugins = []PluginConfig{}
 	}
+	if cfg.Workspace.ID == "" && defaultWorkspaceID != "" {
+		cfg.Workspace.ID = defaultWorkspaceID
+	}
 	if err := validateUserConfig(&cfg); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+func derivedWorkspaceID(path string) string {
+	base := filepath.Base(path)
+	ext := filepath.Ext(base)
+	return strings.TrimSuffix(base, ext)
 }
 
 func mappingValue(node *yaml.Node, key string) *yaml.Node {

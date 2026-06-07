@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strings"
 
 	"github.com/John-Robertt/Auto-OpenWrt/internal/workspace"
 	"go.yaml.in/yaml/v3"
@@ -18,11 +19,12 @@ import (
 var runIDPattern = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}Z-[a-z0-9]{6}$`)
 
 type ResolveInput struct {
-	Config      *UserConfig
-	ProjectRoot string
-	BuildID     string
-	RunID       string
-	Env         ResolveEnv
+	Config          *UserConfig
+	ProjectRoot     string
+	BuildID         string
+	RunID           string
+	AdoptedPatchIDs []string
+	Env             ResolveEnv
 }
 
 type ResolveEnv struct {
@@ -37,6 +39,12 @@ func DefaultResolveEnv() ResolveEnv {
 		CaseSensitive: runtime.GOOS == "linux",
 		CPUCount:      runtime.NumCPU(),
 	}
+}
+
+func ProjectResolveEnv(projectRoot string) ResolveEnv {
+	env := DefaultResolveEnv()
+	env.CaseSensitive = runtime.GOOS == "linux" && !isWSL() && pathCaseSensitive(projectRoot)
+	return env
 }
 
 func Resolve(input ResolveInput) (*ResolvedConfig, error) {
@@ -119,7 +127,7 @@ func Resolve(input ResolveInput) (*ResolvedConfig, error) {
 		Health:          ResolvedHealth{MinDiskGB: intPointerDefault(input.Config.Health.MinDiskGB, 80)},
 		AIRepair:        resolveAIRepair(input.Config.AIRepair),
 		Artifacts:       ResolvedArtifacts{Retention: stringDefault(input.Config.Artifacts.Retention, "keep-all")},
-		AdoptedPatchIDs: []string{},
+		AdoptedPatchIDs: nonNilStrings(input.AdoptedPatchIDs),
 	}, nil
 }
 
@@ -238,6 +246,39 @@ func resolveWorktreeStorage(cfg WorkspaceConfig, env ResolveEnv) string {
 		return "host-path"
 	}
 	return "docker-volume"
+}
+
+func pathCaseSensitive(root string) bool {
+	if root == "" {
+		root = "."
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return false
+	}
+	dir, err := os.MkdirTemp(root, ".auto-openwrt-case-*")
+	if err != nil {
+		return false
+	}
+	defer os.RemoveAll(dir)
+
+	upper := filepath.Join(dir, "CASETEST")
+	lower := filepath.Join(dir, "casetest")
+	if err := os.WriteFile(upper, []byte("x"), 0o644); err != nil {
+		return false
+	}
+	if _, err := os.Stat(lower); err == nil {
+		return false
+	}
+	return true
+}
+
+func isWSL() bool {
+	data, err := os.ReadFile("/proc/version")
+	if err != nil {
+		return false
+	}
+	text := strings.ToLower(string(data))
+	return strings.Contains(text, "microsoft") || strings.Contains(text, "wsl")
 }
 
 func resolveJobs(value any, cpuCount int) int {

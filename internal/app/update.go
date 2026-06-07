@@ -25,6 +25,7 @@ type SourceUpdater interface {
 
 type updateBootstrap struct {
 	ConfigPath  string
+	RawConfig   []byte
 	Config      *config.UserConfig
 	WorkspaceID string
 	BuildID     *string
@@ -68,7 +69,20 @@ func Update(ctx context.Context, options UpdateOptions) (Result, int) {
 	if err := runStore.StartStage(runDir, "config.read", "记录 user config 快照", time.Now().UTC()); err != nil {
 		return Failed("update", store.Root, workspaceWriteError(err)), ExitWorkspaceError
 	}
-	if err := runStore.FinishStage(runDir, "config.read", runrecord.StatusSucceeded, []string{bootstrap.ConfigPath}, nil, "", time.Now().UTC()); err != nil {
+	configSnapshotPath, err := writeConfigSnapshot(runDir, bootstrap.RawConfig)
+	if err != nil {
+		errObj := workspaceErrorObject("CONFIG_SNAPSHOT_WRITE_ERROR", "user config 快照无法写入", "检查 run record 目录权限和磁盘空间", err)
+		_ = runStore.FinishStage(runDir, "config.read", runrecord.StatusFailed, nil, errObj, errObj.Suggestion, time.Now().UTC())
+		_ = runStore.Complete(runDir, runrecord.FinalBlocked, "config-snapshot-write-failed", errObj, time.Now().UTC())
+		return resultFromRun("update", store.Root, record, errObj, map[string]string{"run_record": filepath.Join(runDir, "run.json")}, "blocked"), ExitWorkspaceError
+	}
+	if err := runStore.SetPath(runDir, "user_config", configSnapshotPath); err != nil {
+		errObj := workspaceErrorObject("CONFIG_SNAPSHOT_WRITE_ERROR", "user config 快照路径无法写入 run record", "检查 run record 目录权限和磁盘空间", err)
+		_ = runStore.FinishStage(runDir, "config.read", runrecord.StatusFailed, []string{configSnapshotPath}, errObj, errObj.Suggestion, time.Now().UTC())
+		_ = runStore.Complete(runDir, runrecord.FinalBlocked, "config-snapshot-path-write-failed", errObj, time.Now().UTC())
+		return resultFromRun("update", store.Root, record, errObj, map[string]string{"run_record": filepath.Join(runDir, "run.json"), "user_config": configSnapshotPath}, "blocked"), ExitWorkspaceError
+	}
+	if err := runStore.FinishStage(runDir, "config.read", runrecord.StatusSucceeded, []string{configSnapshotPath}, nil, "", time.Now().UTC()); err != nil {
 		return Failed("update", store.Root, workspaceWriteError(err)), ExitWorkspaceError
 	}
 	if err := runStore.StartStage(runDir, "config.resolve", "解析 update source-set 集合", time.Now().UTC()); err != nil {
@@ -113,6 +127,7 @@ func Update(ctx context.Context, options UpdateOptions) (Result, int) {
 
 	paths := map[string]string{
 		"run_record":            filepath.Join(runDir, "run.json"),
+		"user_config":           configSnapshotPath,
 		"source_update_summary": updateResult.SummaryPath,
 	}
 	if len(updateResult.Snapshots) == 1 {
@@ -129,7 +144,7 @@ func Update(ctx context.Context, options UpdateOptions) (Result, int) {
 
 func bootstrapUpdate(store workspace.Store, configPathFlag, buildID string) (updateBootstrap, Result, int) {
 	configPath := resolveConfigPath(store, configPathFlag)
-	cfg, err := config.LoadUserConfig(configPath)
+	cfg, raw, err := config.LoadUserConfigSnapshot(configPath)
 	if err != nil {
 		return updateBootstrap{}, Failed("update", store.Root, configAppError(err)), ExitUsageError
 	}
@@ -139,6 +154,7 @@ func bootstrapUpdate(store workspace.Store, configPathFlag, buildID string) (upd
 	}
 	bootstrap := updateBootstrap{
 		ConfigPath:  configPath,
+		RawConfig:   raw,
 		Config:      cfg,
 		WorkspaceID: cfg.Workspace.ID,
 		Plans:       plans,
